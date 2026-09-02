@@ -41,6 +41,7 @@ SSH_PASSWORD="${SSH_PASSWORD:-ChangeMe!2026}"   # bitte ändern oder SSH_KEY set
 SSH_KEY="${SSH_KEY:-}"                          # optional: Pfad zu Public-Key-Datei
 REPO_URL="${REPO_URL:-https://github.com/HatchetMan111/LokalerNewSender.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"   # optional: Token für PRIVATE Repos (read-only empfohlen)
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
 START_VM="${START_VM:-yes}"
 WAIT_IP="${WAIT_IP:-yes}"        # yes = bis zu 3 Min. auf die IP warten
@@ -163,6 +164,15 @@ if [[ -z "$STORAGE" ]]; then
   else
     STORAGE=$(echo "$ACTIVE_STORAGES" | head -1)
   fi
+fi
+
+# Bei privatem Repo: Token in die Clone-URL einbetten (read-only Token verwenden!)
+CLONE_URL="$REPO_URL"
+if [[ -n "$GITHUB_TOKEN" ]]; then
+  CLONE_URL="${REPO_URL/https:\/\//https:\/\/${GITHUB_TOKEN}@}"
+  msg_info "GitHub-Token für privates Repository wird verwendet."
+elif [[ "$REPO_URL" =~ ^https://github\.com/ ]]; then
+  msg_info "Hinweis: Bei privatem Repo GITHUB_TOKEN=... setzen oder Repo auf public stellen."
 fi
 
 # ------------------------- Plausibilitäts-Checks ---------------------------
@@ -340,7 +350,7 @@ cat > "/tmp/local-news-install-${VMID}.sh" <<INSTALLER_EOF
 # und systemd-Retry bei jedem Boot, bis der Stack läuft)
 exec > /var/log/local-news-install.log 2>&1
 
-REPO_URL="${REPO_URL}"
+REPO_URL="${CLONE_URL}"
 REPO_BRANCH="${REPO_BRANCH}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
 
