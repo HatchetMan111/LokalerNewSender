@@ -151,10 +151,17 @@ fi
 
 # Reicht der Platz auf dem Storage? (Best-Effort: bei Unsicherheit warnen,
 # nicht abbrechen – der Admin weiß am besten, wie viel Platz er hat.)
+# Autoritative Quelle: pvesh pro Storage (robust gegen kaputte andere Storages)
+NODE=$(hostname -s)
 DISK_NUM="${DISK_SIZE%[GgMm]}"
 if [[ "$DISK_SIZE" =~ [Mm]$ ]]; then DISK_GB=$((DISK_NUM / 1024)); else DISK_GB="$DISK_NUM"; fi
 NEEDED_MB=$(( (DISK_GB + 10) * 1024 ))
-AVAIL_MB=$(echo "$STORAGE_TABLE" | awk -v s="$STORAGE" '$1==s && $6 ~ /^[0-9]+$/ {printf "%d", int($6/1024/1024)}' | head -1)
+
+AVAIL_MB=$(pvesh get "/nodes/$NODE/storage/$STORAGE/status" --output-format json 2>/dev/null \
+  | python3 -c "import json,sys; print(int(json.load(sys.stdin).get('avail', 0) / 1024 / 1024))" 2>/dev/null)
+[[ -z "$AVAIL_MB" || "$AVAIL_MB" == "0" ]] && \
+  AVAIL_MB=$(echo "$STORAGE_TABLE" | awk -v s="$STORAGE" '$1==s && $6 ~ /^[0-9]+$/ {printf "%d", int($6/1024/1024)}' | head -1)
+
 if [[ -n "$AVAIL_MB" && "$AVAIL_MB" -lt "$NEEDED_MB" ]]; then
   AVAIL_SHOW="$((AVAIL_MB / 1024)) GB"; [[ "$AVAIL_MB" -lt 1024 ]] && AVAIL_SHOW="${AVAIL_MB} MB"
   SPACE_WARN="Storage '${STORAGE}' hat nur ${AVAIL_SHOW} frei, für ${DISK_SIZE} + Docker-Images werden ~$((NEEDED_MB / 1024)) GB empfohlen."
@@ -219,6 +226,17 @@ else
   done
   [[ -z "$DOWNLOADED" ]] && msg_error "Image-Download fehlgeschlagen. Internetverbindung des Hosts prüfen."
   msg_ok "Image heruntergeladen ($(du -h "$IMG_FILE" | cut -f1)) von ${DOWNLOADED##*/}"
+fi
+
+# Guest-Agent direkt ins Image stampfen, damit die IP-Ermittlung beim
+# ersten Boot sofort funktioniert (falls libguestfs installiert ist).
+if command -v virt-customize >/dev/null 2>&1; then
+  msg_info "Installiere QEMU Guest Agent ins Image (virt-customize) ..."
+  if virt-customize -a "$IMG_FILE" --install qemu-guest-agent --run-command 'systemctl enable qemu-guest-agent' >/dev/null 2>&1; then
+    msg_ok "Guest-Agent ins Image installiert"
+  else
+    msg_info "virt-customize fehlgeschlagen – Agent kommt per Cloud-Init nach dem Boot"
+  fi
 fi
 
 # ------------------------- VM anlegen --------------------------------------
@@ -413,21 +431,30 @@ function get_ip_by_arp {
 }
 
 if [[ "$START_VM" == "yes" && "$WAIT_IP" == "yes" ]]; then
-  msg_info "Warte auf VM-IP (Boot + Cloud-Init dauern einige Minuten) ..."
-  for i in $(seq 1 60); do
+  msg_info "Warte auf VM-IP – jederzeit mit ENTER überspringen ..."
+  for i in $(seq 1 36); do
     VM_IP=$(get_ip_by_agent)
     [[ -z "$VM_IP" ]] && VM_IP=$(get_ip_by_arp)
     if [[ -n "$VM_IP" ]]; then
       msg_ok "VM-IP: $VM_IP"
       break
     fi
-    [[ $((i % 6)) -eq 0 ]] && msg_info "  ... warte noch ($((i * 5)) s)"
-    sleep 5
+    if read -t 5 -n 1 -s key 2>/dev/null; then
+      msg_info "Warteschleife übersprungen."
+      break
+    fi
+    if [[ $((i % 6)) -eq 0 ]]; then
+      VM_STATE=$(qm status "$VMID" 2>/dev/null | awk '/status:/ {print $2}')
+      AGENT_STATE="nein"; qm guest cmd "$VMID" ping >/dev/null 2>&1 && AGENT_STATE="ja"
+      msg_info "  ... $((i * 5))s – VM: ${VM_STATE:-?} · Guest-Agent: ${AGENT_STATE} · ARP: -"
+    fi
   done
   if [[ -z "$VM_IP" ]]; then
-    msg_info "Konnte IP nicht automatisch ermitteln. Nachsehen mit:"
-    msg_info "  qm guest cmd ${VMID} network-get-interfaces"
-    msg_info "  oder: cat /etc/pve/qemu-server/${VMID}.conf   (MAC) + 'ip neigh'"
+    msg_info "IP automatisch nicht ermittelbar. Nachsehen mit:"
+    msg_info "  qm guest cmd ${VMID} network-get-interfaces   (braucht fertig gebootete VM)"
+    msg_info "  oder: ip neigh | grep <MAC>   (MAC: qm config ${VMID} | grep net0)"
+    msg_info "Hinweis: Der erste Boot (Cloud-Init + Docker-Build) dauert auf kleinen"
+    msg_info "Hosts gerne 5–15 Minuten – die Weboberfläche erscheint etwas später."
   fi
 fi
 
