@@ -380,11 +380,27 @@ if ! command -v docker >/dev/null 2>&1; then
   systemctl enable --now docker
 fi
 
-# ---- Repository laden (idempotent) ----
+# ---- Repository laden (Tarball vom Host bevorzugt, sonst git/codeload) ----
 if [ ! -f /opt/local-news/docker-compose.yml ]; then
   rm -rf /opt/local-news
-  log "[INFO] Klone \$REPO_URL ..."
-  git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news || { log "[ERROR] git clone fehlgeschlagen"; exit 1; }
+  if [ -f /opt/local-news.tar.gz ]; then
+    log "[INFO] Entpacke vom Host übermittelten Repo-Tarball ..."
+    mkdir -p /opt/local-news
+    tar xzf /opt/local-news.tar.gz -C /opt/local-news --strip-components=1
+  else
+    log "[INFO] Klone \$REPO_URL ..."
+    if ! git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news; then
+      log "[WARN] git clone fehlgeschlagen – Fallback: Tarball-Download"
+      REPO_PATH=\$(echo "\$REPO_URL" | sed 's|\.git\$||; s|https://[^@]*@github.com/||; s|https://github.com/||')
+      if curl -fsSL "https://codeload.github.com/\${REPO_PATH}/tar.gz/refs/heads/\${REPO_BRANCH}" -o /tmp/repo.tar.gz; then
+        mkdir -p /opt/local-news
+        tar xzf /tmp/repo.tar.gz -C /opt/local-news --strip-components=1
+      else
+        log "[ERROR] Repository nicht ladbar (clone UND tarball)"; exit 1
+      fi
+    fi
+  fi
+  [ -f /opt/local-news/docker-compose.yml ] || { log "[ERROR] docker-compose.yml fehlt im Repo"; exit 1; }
 fi
 
 cd /opt/local-news
@@ -585,6 +601,37 @@ if [[ -n "$STATIC_IP" && "$START_VM" == "yes" ]]; then
   VM_IP="$STATIC_IP"
 fi
 
+# ------------------------- Repo in VM einschleusen (qm guest push) ---------
+# Der Host lädt den Repo-Tarball von codeload.github.com (funktioniert auch
+# bei Repos, bei denen 'git clone' nach Credentials fragt) und schiebt ihn
+# per Guest-Agent direkt in die VM. Die VM braucht dann KEINEN Clone mehr.
+# Lokales Repo wird bevorzugt, falls vorhanden (z.B. bei manueller Ausführung
+# aus einem Checkout: REPO_DIR=/pfad/zum/repo bash proxmox/local-news-vm.sh).
+REPO_DIR="${REPO_DIR:-}"
+REPO_TARBALL="/tmp/local-news-repo.tar.gz"
+rm -f "$REPO_TARBALL"
+if [[ -n "$REPO_DIR" && -f "$REPO_DIR/docker-compose.yml" ]]; then
+  tar czf "$REPO_TARBALL" -C "$REPO_DIR" --exclude='.git' --exclude='__pycache__' . && \
+    msg_info "Repo-Tarball aus ${REPO_DIR} erstellt"
+elif [[ -f "$(dirname "$0")/docker-compose.yml" ]]; then
+  tar czf "$REPO_TARBALL" -C "$(dirname "$0")" --exclude='.git' --exclude='__pycache__' . && \
+    msg_info "Repo-Tarball aus $(dirname "$0") erstellt"
+else
+  REPO_PATH=$(echo "$CLONE_URL" | sed 's|\.git$||; s|https://[^@]*@github.com/||; s|https://github.com/||')
+  if wget -q -O "$REPO_TARBALL" "https://codeload.github.com/${REPO_PATH}/tar.gz/refs/heads/${REPO_BRANCH}"; then
+    msg_info "Repo-Tarball von codeload.github.com geladen ($(du -h "$REPO_TARBALL" | cut -f1))"
+  else
+    msg_info "Tarball-Download fehlgeschlagen – VM lädt das Repo selbst (git clone mit Tarball-Fallback)"
+  fi
+fi
+
+# Tarball in die VM schieben (braucht laufenden Guest-Agent; wird weiter unten
+# nach dem VM-Start erneut versucht, falls der Agent noch nicht bereit war)
+function push_repo_to_vm {
+  [[ -f "$REPO_TARBALL" ]] || return 1
+  qm guest push "$VMID" "$REPO_TARBALL" "/opt/local-news.tar.gz" 2>/dev/null
+}
+
 function get_install_progress {
   # Letzte Zeile des Installer-Logs via Guest-Agent (falls der läuft)
   qm guest exec "$VMID" -- tail -n 1 /var/log/local-news-install.log 2>/dev/null \
@@ -600,6 +647,15 @@ except Exception:
 }
 
 # ------------------------- Erreichbarkeit prüfen ---------------------------
+# Repo-Tarball in die VM schieben (falls Agent inzwischen bereit ist) und
+# Installer (neu) anstoßen.
+if [[ "$START_VM" == "yes" ]]; then
+  if push_repo_to_vm; then
+    msg_ok "Repo-Tarball in VM übertragen (/opt/local-news.tar.gz)"
+    qm guest exec "$VMID" -- systemctl restart local-news-install >/dev/null 2>&1 \
+      && msg_ok "Installer in VM (neu) gestartet"
+  fi
+fi
 # Nicht behaupten, sondern testen: Warten bis /api/health vom Stack antwortet
 # (Docker-Build kann auf kleinen Hosts 15-20 Min dauern). ENTER überspringt.
 if [[ "$START_VM" == "yes" && -n "$VM_IP" ]]; then
