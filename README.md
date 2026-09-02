@@ -39,15 +39,15 @@ kostenlose Dienste.
 ### 1. Proxmox-VM erstellen (auf dem Proxmox-Host)
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/YOURUSER/local-news-platform/main/proxmox/local-news-vm.sh)"
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
 ```
 
 Eigene Werte (Beispiel):
 
 ```bash
 VMID=9100 CORES=8 RAM=16384 STORAGE=local-lvm \
-REPO_URL=https://github.com/YOURUSER/local-news-platform.git \
-  bash -c "$(wget -qLO - https://raw.githubusercontent.com/YOURUSER/local-news-platform/main/proxmox/local-news-vm.sh)"
+REPO_URL=https://github.com/HatchetMan111/LokalerNewSender.git \
+  bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
 ```
 
 Das Script:
@@ -66,7 +66,7 @@ tail -f /var/log/local-news-install.log
 ### 2. Manuell (bereits vorhandene VM / beliebiges Linux)
 
 ```bash
-git clone https://github.com/YOURUSER/local-news-platform.git
+git clone https://github.com/HatchetMan111/LokalerNewSender.git
 cd local-news-platform
 cp .env.example .env          # Passwörter/Keys anpassen
 docker compose up -d --build

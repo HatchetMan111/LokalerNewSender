@@ -8,11 +8,11 @@
 #  Redis, FFmpeg-Renderer) mit einem einzigen Befehl.
 #
 #  Ausführen auf dem Proxmox-Host:
-#      bash -c "$(wget -qLO - https://raw.githubusercontent.com/YOURUSER/local-news-platform/main/proxmox/local-news-vm.sh)"
+#      bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
 #
 #  Oder mit eigenen Werten:
-#      VMID=9100 CORES=4 RAM=8192 REPO_URL=https://github.com/YOURUSER/local-news-platform.git \
-#          bash -c "$(wget -qLO - https://raw.githubusercontent.com/YOURUSER/local-news-platform/main/proxmox/local-news-vm.sh)"
+#      VMID=9100 CORES=4 RAM=8192 REPO_URL=https://github.com/HatchetMan111/LokalerNewSender.git \
+#          bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
 # ============================================================================
 #  Lizenz: MIT
 # ============================================================================
@@ -33,7 +33,7 @@ DEBIAN_VERSION="${DEBIAN_VERSION:-12.7}"
 SSH_USER="${SSH_USER:-newsadmin}"
 SSH_PASSWORD="${SSH_PASSWORD:-ChangeMe!2026}"   # bitte ändern oder SSH_KEY setzen
 SSH_KEY="${SSH_KEY:-}"                          # optional: Public-Key für Login
-REPO_URL="${REPO_URL:-https://github.com/YOURUSER/local-news-platform.git}"
+REPO_URL="${REPO_URL:-https://github.com/HatchetMan111/LokalerNewSender.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
 START_VM="${START_VM:-yes}"
@@ -159,7 +159,7 @@ mkdir -p /opt/local-news
 if [ -d /opt/local-news/.git ]; then
   echo "[INFO] Repository vorhanden – update ..."
   git -C /opt/local-news pull --ff-only || true
-elif [ "\$REPO_URL" != "https://github.com/YOURUSER/local-news-platform.git" ]; then
+elif [ "\$REPO_URL" != "https://github.com/HatchetMan111/LokalerNewSender.git" ]; then
   echo "[INFO] Klone \$REPO_URL ..."
   git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news
 else
