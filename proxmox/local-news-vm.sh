@@ -326,41 +326,45 @@ mkdir -p "$SNIPPET_DIR"
 
 cat > "/tmp/local-news-install-${VMID}.sh" <<INSTALLER_EOF
 #!/usr/bin/env bash
-# In-VM-Installer für Local News Platform (aufgerufen via cloud-init runcmd)
-set -e
+# In-VM-Installer für Local News Platform (aufgerufen via cloud-init runcmd
+# und systemd-Retry bei jedem Boot, bis der Stack läuft)
 exec > /var/log/local-news-install.log 2>&1
 
 REPO_URL="${REPO_URL}"
 REPO_BRANCH="${REPO_BRANCH}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
 
-echo "=== Local News Platform In-VM-Installer ==="
-date
+function log() { echo "[\$(date '+%H:%M:%S')] \$*"; }
+
+# Wird auch bei jedem Boot erneut gestartet, bis der Stack läuft –
+# so erholt sich die Installation selbst von Netz-/Build-Fehlern.
+STACK_UP() { docker compose -f /opt/local-news/docker-compose.yml ps 2>/dev/null | grep -q "backend"; }
+
+if STACK_UP; then
+  log "[ OK ] Stack läuft bereits – nichts zu tun."
+  exit 0
+fi
+
+log "=== Local News Platform In-VM-Installer ==="
 
 # ---- Basispakete (Guest-Agent zuerst, damit die IP auf dem Host auftaucht) ----
-echo "[INFO] Installiere Basispakete (curl, git, qemu-guest-agent) ..."
+log "[INFO] Installiere Basispakete (curl, git, qemu-guest-agent) ..."
 apt-get update -qq || true
 apt-get install -y -qq curl git qemu-guest-agent || true
 systemctl enable --now qemu-guest-agent || true
 
 # ---- Docker installieren ----
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[INFO] Installiere Docker ..."
-  curl -fsSL https://get.docker.com | sh
+  log "[INFO] Installiere Docker ..."
+  curl -fsSL https://get.docker.com | sh || { log "[ERROR] Docker-Installation fehlgeschlagen"; exit 1; }
   systemctl enable --now docker
 fi
 
-# ---- Repository laden ----
-mkdir -p /opt/local-news
-if [ -d /opt/local-news/.git ]; then
-  echo "[INFO] Repository vorhanden – update ..."
-  git -C /opt/local-news pull --ff-only || true
-elif [ "\$REPO_URL" != "https://github.com/HatchetMan111/LokalerNewSender.git" ] || git ls-remote "\$REPO_URL" >/dev/null 2>&1; then
-  echo "[INFO] Klone \$REPO_URL ..."
-  git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news
-else
-  echo "[WARN] Repository nicht erreichbar – lege Grundstruktur an."
-  mkdir -p /opt/local-news
+# ---- Repository laden (idempotent) ----
+if [ ! -f /opt/local-news/docker-compose.yml ]; then
+  rm -rf /opt/local-news
+  log "[INFO] Klone \$REPO_URL ..."
+  git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news || { log "[ERROR] git clone fehlgeschlagen"; exit 1; }
 fi
 
 cd /opt/local-news
@@ -386,24 +390,39 @@ if [ ! -f .env ]; then
   sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=\$POSTGRES_PASSWORD/" .env
 fi
 
-# ---- Stack starten ----
-echo "[INFO] Starte Docker Compose Stack (erster Build dauert einige Minuten) ..."
-docker compose up -d --build
+# ---- Stack starten (mit Wiederholungen) ----
+ATTEMPT=0
+until [ \$ATTEMPT -ge 3 ]; do
+  ATTEMPT=\$((ATTEMPT+1))
+  log "[INFO] Docker Compose Build/Start – Versuch \$ATTEMPT von 3 (dauert beim ersten Mal einige Minuten) ..."
+  if docker compose up -d --build; then
+    break
+  fi
+  log "[WARN] Versuch \$ATTEMPT fehlgeschlagen – warte 60 s und versuche erneut ..."
+  sleep 60
+done
 
-# ---- Status ----
-sleep 10
+# ---- Status + interner Gesundheitstest ----
+sleep 15
 docker compose ps
-IP=\$(hostname -I | awk '{print \$1}')
-echo "[ OK ] Local News Platform erreichbar unter: http://\${IP}"
-date
+for i in \$(seq 1 12); do
+  if curl -s -m 3 http://localhost/api/health | grep -q ok; then
+    IP=\$(hostname -I | awk '{print \$1}')
+    log "[ OK ] Local News Platform läuft: http://\${IP}"
+    exit 0
+  fi
+  log "[INFO] Warte auf Backend ... (\$i/12)"
+  sleep 10
+done
+log "[WARN] Backend antwortet noch nicht – Details: docker compose logs"
+log "[INFO] Der systemd-Service versucht es beim nächsten Boot erneut."
+exit 1
 INSTALLER_EOF
 
-# User-Data YAML bauen: Installer einbetten (eingerückt) + runcmd
+
+# User-Data YAML: Installer einbetten + systemd-Retry-Unit + runcmd
 cat > "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
 #cloud-config
-YAML_EOF
-
-cat >> "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
 write_files:
   - path: /opt/local-news-install.sh
     permissions: '0755'
@@ -411,9 +430,28 @@ write_files:
 YAML_EOF
 sed 's/^/      /' "/tmp/local-news-install-${VMID}.sh" >> "/tmp/local-news-user-${VMID}.yaml"
 cat >> "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
+  - path: /etc/systemd/system/local-news-install.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Local News Platform Installer (Retry bis Stack laeuft)
+      After=network-online.target docker.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/local-news-install.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
 runcmd:
-  - [bash, /opt/local-news-install.sh]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, local-news-install.service]
 YAML_EOF
+
+cp "/tmp/local-news-user-${VMID}.yaml" "${SNIPPET_DIR}/local-news-user-${VMID}.yaml"
+qm set "$VMID" --cicustom "user=${SNIPPET_STORAGE}:snippets/local-news-user-${VMID}.yaml"
 
 cp "/tmp/local-news-user-${VMID}.yaml" "${SNIPPET_DIR}/local-news-user-${VMID}.yaml"
 qm set "$VMID" --cicustom "user=${SNIPPET_STORAGE}:snippets/local-news-user-${VMID}.yaml"
@@ -512,6 +550,34 @@ if [[ -n "$STATIC_IP" && "$START_VM" == "yes" ]]; then
     read -t 5 -n 1 -s key 2>/dev/null && break
   done
   VM_IP="$STATIC_IP"
+fi
+
+# ------------------------- Erreichbarkeit prüfen ---------------------------
+# Nicht behaupten, sondern testen: Warten bis /api/health vom Stack antwortet
+# (Docker-Build kann einige Minuten dauern). ENTER überspringt.
+if [[ "$START_VM" == "yes" && -n "$VM_IP" ]]; then
+  msg_info "Prüfe Weboberfläche unter http://${VM_IP} (Docker-Build läuft noch einige Minuten) ..."
+  WEB_OK=""
+  for i in $(seq 1 120); do
+    if curl -s -m 3 "http://${VM_IP}/api/health" 2>/dev/null | grep -q '"ok"'; then
+      WEB_OK="yes"
+      msg_ok "Weboberfläche ist ERREICHBAR: http://${VM_IP}"
+      break
+    fi
+    if read -t 5 -n 1 -s key 2>/dev/null; then
+      msg_info "Prüfung übersprungen."
+      break
+    fi
+    if [[ $((i % 12)) -eq 0 ]]; then
+      msg_info "  ... $((i * 5))s – Build läuft ggf. noch; Details: ssh ${SSH_USER}@${VM_IP} → tail -f /var/log/local-news-install.log"
+    fi
+  done
+  if [[ -z "$WEB_OK" ]]; then
+    msg_info "Noch nicht erreichbar (Build dauert an) – Status prüfen mit:"
+    msg_info "  ssh ${SSH_USER}@${VM_IP}   (Passwort: ${SSH_PASSWORD})"
+    msg_info "  tail -f /var/log/local-news-install.log && docker compose -f /opt/local-news/docker-compose.yml ps"
+    msg_info "Der systemd-Service 'local-news-install' wiederholt die Installation automatisch bei Bedarf."
+  fi
 fi
 
 # ------------------------- Abschluss ---------------------------------------
