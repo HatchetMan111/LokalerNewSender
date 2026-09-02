@@ -88,7 +88,8 @@ fi
 
 # Offline/beschädigte Storages (z.B. ausgefallenes NFS) dürfen das Script
 # nicht abbrechen: nur aktive Storages mit images-Inhalt gelten als Kandidaten.
-ACTIVE_STORAGES=$(pvesm status --content images 2>/dev/null | awk 'NR>1 && $3=="active" {print $1}')
+STORAGE_TABLE=$(pvesm status --content images 2>/dev/null || true)
+ACTIVE_STORAGES=$(echo "$STORAGE_TABLE" | awk 'NR>1 && $3=="active" {print $1}')
 if [[ -z "$ACTIVE_STORAGES" ]]; then
   msg_error "Kein aktiver Storage mit images-Inhalt gefunden. pvesm status prüfen."
 fi
@@ -147,13 +148,19 @@ if ! storage_ok "$STORAGE"; then
   Aktive Storages: $(echo "$ACTIVE_STORAGES" | tr '\n' ' ')"
 fi
 
-# Reicht der Platz auf dem Storage?
-AVAIL_GB=$(pvesm status 2>/dev/null | awk -v s="$STORAGE" '$1==s {printf "%d", $6/1024/1024/1024}')
+# Reicht der Platz auf dem Storage? (Best-Effort: bei Unsicherheit warnen,
+# nicht abbrechen – der Admin weiß am besten, wie viel Platz er hat.)
 DISK_NUM="${DISK_SIZE%[GgMm]}"
 if [[ "$DISK_SIZE" =~ [Mm]$ ]]; then DISK_GB=$((DISK_NUM / 1024)); else DISK_GB="$DISK_NUM"; fi
 NEEDED_GB=$((DISK_GB + 10))
-if [[ -n "$AVAIL_GB" && "$AVAIL_GB" -lt "$NEEDED_GB" ]]; then
-  msg_error "Storage '$STORAGE' hat nur ${AVAIL_GB} GB frei, benötigt: ~${NEEDED_GB} GB."
+AVAIL_GB=$(echo "$STORAGE_TABLE" | awk -v s="$STORAGE" '$1==s && $6 ~ /^[0-9]+$/ {printf "%d", int($6/1024/1024/1024)}' | head -1)
+if [[ -n "$AVAIL_GB" && "$AVAIL_GB" -gt 0 && "$AVAIL_GB" -lt "$NEEDED_GB" ]]; then
+  SPACE_WARN="Storage '${STORAGE}' hat nur ${AVAIL_GB} GB frei, für ${DISK_SIZE} + Docker-Images werden ~${NEEDED_GB} GB empfohlen."
+  if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 ]] && command -v whiptail >/dev/null 2>&1; }; then
+    whiptail --yesno "${SPACE_WARN}\n\nTrotzdem fortfahren?" 12 58 3>&1 1>&2 2>&3 && msg_info "Fortfahren auf eigene Verantwortung" || msg_error "Abgebrochen. Anderen Storage wählen oder Speicher freigeben."
+  else
+    msg_info "HINWEIS: ${SPACE_WARN}"
+  fi
 fi
 
 if [[ -n "$SSH_KEY" && ! -f "$SSH_KEY" ]]; then
@@ -167,6 +174,7 @@ echo -e "  vCPU       : ${GN}${CORES}${CL}"
 echo -e "  RAM        : ${GN}$((RAM / 1024)) GB${CL} (${RAM} MB)"
 echo -e "  Disk       : ${GN}${DISK_SIZE}${CL}"
 echo -e "  Storage    : ${GN}${STORAGE}${CL}   Bridge: ${GN}${BRIDGE}${CL}"
+[[ -n "$AVAIL_GB" ]] && echo -e "  Frei       : ${GN}~${AVAIL_GB} GB${CL} auf ${STORAGE}"
 echo -e "  SSH-User   : ${GN}${SSH_USER}${CL}"
 echo -e "${BL}---------------------------------------------------${CL}"
 
