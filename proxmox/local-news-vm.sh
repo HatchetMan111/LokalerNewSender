@@ -43,6 +43,7 @@ REPO_URL="${REPO_URL:-https://github.com/HatchetMan111/LokalerNewSender.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
 START_VM="${START_VM:-yes}"
+WAIT_IP="${WAIT_IP:-yes}"        # yes = bis zu 5 Min. auf die IP warten
 
 # ------------------------- Farben & Helpers --------------------------------
 RD=$(echo "\033[01;31m")
@@ -152,10 +153,11 @@ fi
 # nicht abbrechen – der Admin weiß am besten, wie viel Platz er hat.)
 DISK_NUM="${DISK_SIZE%[GgMm]}"
 if [[ "$DISK_SIZE" =~ [Mm]$ ]]; then DISK_GB=$((DISK_NUM / 1024)); else DISK_GB="$DISK_NUM"; fi
-NEEDED_GB=$((DISK_GB + 10))
-AVAIL_GB=$(echo "$STORAGE_TABLE" | awk -v s="$STORAGE" '$1==s && $6 ~ /^[0-9]+$/ {printf "%d", int($6/1024/1024/1024)}' | head -1)
-if [[ -n "$AVAIL_GB" && "$AVAIL_GB" -gt 0 && "$AVAIL_GB" -lt "$NEEDED_GB" ]]; then
-  SPACE_WARN="Storage '${STORAGE}' hat nur ${AVAIL_GB} GB frei, für ${DISK_SIZE} + Docker-Images werden ~${NEEDED_GB} GB empfohlen."
+NEEDED_MB=$(( (DISK_GB + 10) * 1024 ))
+AVAIL_MB=$(echo "$STORAGE_TABLE" | awk -v s="$STORAGE" '$1==s && $6 ~ /^[0-9]+$/ {printf "%d", int($6/1024/1024)}' | head -1)
+if [[ -n "$AVAIL_MB" && "$AVAIL_MB" -lt "$NEEDED_MB" ]]; then
+  AVAIL_SHOW="$((AVAIL_MB / 1024)) GB"; [[ "$AVAIL_MB" -lt 1024 ]] && AVAIL_SHOW="${AVAIL_MB} MB"
+  SPACE_WARN="Storage '${STORAGE}' hat nur ${AVAIL_SHOW} frei, für ${DISK_SIZE} + Docker-Images werden ~$((NEEDED_MB / 1024)) GB empfohlen."
   if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 ]] && command -v whiptail >/dev/null 2>&1; }; then
     whiptail --yesno "${SPACE_WARN}\n\nTrotzdem fortfahren?" 12 58 3>&1 1>&2 2>&3 && msg_info "Fortfahren auf eigene Verantwortung" || msg_error "Abgebrochen. Anderen Storage wählen oder Speicher freigeben."
   else
@@ -174,7 +176,10 @@ echo -e "  vCPU       : ${GN}${CORES}${CL}"
 echo -e "  RAM        : ${GN}$((RAM / 1024)) GB${CL} (${RAM} MB)"
 echo -e "  Disk       : ${GN}${DISK_SIZE}${CL}"
 echo -e "  Storage    : ${GN}${STORAGE}${CL}   Bridge: ${GN}${BRIDGE}${CL}"
-[[ -n "$AVAIL_GB" ]] && echo -e "  Frei       : ${GN}~${AVAIL_GB} GB${CL} auf ${STORAGE}"
+if [[ -n "$AVAIL_MB" ]]; then
+  AVAIL_SHOW="$((AVAIL_MB / 1024)) GB"; [[ "$AVAIL_MB" -lt 1024 ]] && AVAIL_SHOW="${AVAIL_MB} MB"
+  echo -e "  Frei       : ${GN}~${AVAIL_SHOW}${CL} auf ${STORAGE}"
+fi
 echo -e "  SSH-User   : ${GN}${SSH_USER}${CL}"
 echo -e "${BL}---------------------------------------------------${CL}"
 
@@ -228,7 +233,7 @@ if ! qm create "$VMID" \
   --memory "$RAM" \
   --balloon 0 \
   --net0 "$NET0" \
-  --scsihw virtio-scsi-pci \
+  --scsihw virtio-scsi-single \
   --ostype l26 \
   --agent enabled=1 \
   --onboot 1 \
@@ -380,14 +385,13 @@ if [[ "$START_VM" == "yes" ]]; then
 fi
 
 # ------------------------- IP ermitteln ------------------------------------
-# qemu-guest-agent wird per Cloud-Init installiert; wir warten bis zu ~90 s
-# auf die IP. Bei Timeout gibt es Hinweise zum manuellen Auslesen.
+# qemu-guest-agent wird erst beim ersten Boot per Cloud-Init installiert –
+# das kann mehrere Minuten dauern. Wir warten bis zu 5 Minuten und haben
+# einen ARP/MAC-Fallback. Abschaltbar mit WAIT_IP=no.
 VM_IP=""
-if [[ "$START_VM" == "yes" ]]; then
-  msg_info "Warte auf VM-IP (QEMU Guest Agent) ..."
-  for i in $(seq 1 30); do
-    VM_IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null \
-      | python3 -c "
+
+function get_ip_by_agent {
+  qm guest cmd "$VMID" network-get-interfaces 2>/dev/null | python3 -c "
 import json, sys
 try:
     for iface in json.load(sys.stdin):
@@ -397,16 +401,33 @@ try:
                 print(ip)
 except Exception:
     pass
-" | head -1)
+" | head -1
+}
+
+function get_ip_by_arp {
+  # VM-MAC aus Config holen und im ARP-Cache des Hosts suchen
+  local mac
+  mac=$(qm config "$VMID" 2>/dev/null | grep '^net0:' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
+  [[ -z "$mac" ]] && return
+  ip neigh show 2>/dev/null | awk -v m="$(echo "$mac" | tr 'A-F' 'a-f')" 'tolower($5)==m {print $1}' | head -1
+}
+
+if [[ "$START_VM" == "yes" && "$WAIT_IP" == "yes" ]]; then
+  msg_info "Warte auf VM-IP (Boot + Cloud-Init dauern einige Minuten) ..."
+  for i in $(seq 1 60); do
+    VM_IP=$(get_ip_by_agent)
+    [[ -z "$VM_IP" ]] && VM_IP=$(get_ip_by_arp)
     if [[ -n "$VM_IP" ]]; then
       msg_ok "VM-IP: $VM_IP"
       break
     fi
-    sleep 3
+    [[ $((i % 6)) -eq 0 ]] && msg_info "  ... warte noch ($((i * 5)) s)"
+    sleep 5
   done
   if [[ -z "$VM_IP" ]]; then
-    msg_info "Konnte IP nicht automatisch ermitteln (Agent noch nicht bereit)."
-    msg_info "IP nachsehen mit: qm guest cmd ${VMID} network-get-interfaces"
+    msg_info "Konnte IP nicht automatisch ermitteln. Nachsehen mit:"
+    msg_info "  qm guest cmd ${VMID} network-get-interfaces"
+    msg_info "  oder: cat /etc/pve/qemu-server/${VMID}.conf   (MAC) + 'ip neigh'"
   fi
 fi
 
