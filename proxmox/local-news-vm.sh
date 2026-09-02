@@ -10,9 +10,13 @@
 #  Ausführen auf dem Proxmox-Host:
 #      bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
 #
-#  Oder mit eigenen Werten:
-#      VMID=9100 CORES=4 RAM=8192 REPO_URL=https://github.com/HatchetMan111/LokalerNewSender.git \
+#  Ohne Nachfragen (Werte per ENV):
+#      INTERACTIVE=no VMID=9100 CORES=4 RAM=8192 DISK_SIZE=64G \
 #          bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
+#
+#  Alle Parameter (ENV-Override): VMID, VM_NAME, CORES, RAM, DISK_SIZE,
+#  STORAGE, BRIDGE, VLAN, SSH_USER, SSH_PASSWORD, SSH_KEY, REPO_URL,
+#  REPO_BRANCH, POSTGRES_PASSWORD, START_VM, INTERACTIVE (auto|yes|no)
 # ============================================================================
 #  Lizenz: MIT
 # ============================================================================
@@ -21,7 +25,6 @@ set -o pipefail
 
 # ------------------------- Einstellungen (Override per ENV) ----------------
 # Test-Defaults (klein). Für Produktion: CORES=8 RAM=16384 DISK_SIZE=64G
-# Alle Werte sind wählbar: interaktiv (Dialoge) oder per ENV-Variable.
 INTERACTIVE="${INTERACTIVE:-auto}"   # auto | yes | no
 VMID="${VMID:-9100}"
 VM_NAME="${VM_NAME:-local-news}"
@@ -29,10 +32,10 @@ CORES="${CORES:-2}"              # Test: 2 vCPU | MVP-Produktion: 8
 RAM="${RAM:-4096}"               # MB – Test: 4096 | MVP-Produktion: 16384
 BRIDGE="${BRIDGE:-vmbr0}"
 VLAN="${VLAN:-}"
-STORAGE="${STORAGE:-local-lvm}"  # VM-Disk Storage
+STORAGE="${STORAGE:-}"           # leer = automatisch wählen (interaktiv oder first match)
 SNIPPET_STORAGE="${SNIPPET_STORAGE:-local}"
 DISK_SIZE="${DISK_SIZE:-32G}"    # Test: 32G | MVP-Produktion: 64G+
-DEBIAN_VERSION="${DEBIAN_VERSION:-12.7}"
+DEBIAN_VERSION="${DEBIAN_VERSION:-}"  # leer = "latest" (immer verfügbar)
 SSH_USER="${SSH_USER:-newsadmin}"
 SSH_PASSWORD="${SSH_PASSWORD:-ChangeMe!2026}"   # bitte ändern oder SSH_KEY setzen
 SSH_KEY="${SSH_KEY:-}"                          # optional: Pfad zu Public-Key-Datei
@@ -50,21 +53,23 @@ CL=$(echo "\033[m")
 
 function header_info {
   clear
-  cat <<"EOF"
-    _          _   _   _   _                          _
-   | |        | | | \ | | | |                        | |
-   | |        | | |  \| | | |     _ __   ___  _ __  | |_   _   _
-   | |        | | | . ` | | |    | '_ \ / _ \| '_ \ | __| | | | |
-   | |____    | | | |\  | | |____| | | | (_) | | | || |_  | |_| |
-   |______|   |_| |_| \_| |______|_| |_|\___/|_| |_| \__|  \__, |
-                                                            __/ |
-   LOCAL NEWS PLATFORM – Single VM Setup                   |___/
-EOF
+  echo -e "${BL}"
+  echo "  +--------------------------------------------------+"
+  echo "  |                                                  |"
+  echo "  |      L O C A L   N E W S   P L A T F O R M       |"
+  echo "  |            Proxmox VM Installer                  |"
+  echo "  |        One VM  ·  One Stack  ·  One UI           |"
+  echo "  |                                                  |"
+  echo "  +--------------------------------------------------+"
+  echo -e "${CL}"
 }
 
-function msg_info()  { local msg="$1"; echo -e "${YW}[INFO ]${CL} ${msg}"; }
-function msg_ok()    { local msg="$1"; echo -e "${GN}[ OK  ]${CL} ${msg}"; }
-function msg_error() { local msg="$1"; echo -e "${RD}[ERROR]${CL} ${msg}"; exit 1; }
+function msg_info()  { echo -e "${YW}[ INFO ]${CL} $1"; }
+function msg_ok()    { echo -e "${GN}[  OK  ]${CL} $1"; }
+function msg_error() { echo -e "${RD}[ FEHL ]${CL} $1"; exit 1; }
+
+IMG_FILE="/tmp/local-news-debian-cloud-amd64.qcow2"
+trap 'rm -f "$IMG_FILE"' EXIT
 
 header_info
 
@@ -78,18 +83,23 @@ if [[ $EUID -ne 0 ]]; then
   msg_error "Bitte als root ausführen (oder sudo -i)."
 fi
 if qm status "$VMID" &>/dev/null; then
-  msg_error "VMID $VMID existiert bereits. Anderen Wert setzen: VMID=9101 bash ..."
+  msg_error "VMID $VMID existiert bereits. Anderen Wert setzen: VMID=9101 ..."
 fi
 
-# Speicherplatz prüfen
-if ! pvesm status | awk '{print $1}' | grep -qx "$STORAGE"; then
-  msg_error "Storage '$STORAGE' nicht gefunden. Vorhandene Storages:"
-  pvesm status | awk 'NR>1 {print "  - " $1}' >&2
+# Offline/beschädigte Storages (z.B. ausgefallenes NFS) dürfen das Script
+# nicht abbrechen: nur aktive Storages mit images-Inhalt gelten als Kandidaten.
+ACTIVE_STORAGES=$(pvesm status --content images 2>/dev/null | awk 'NR>1 && $3=="active" {print $1}')
+if [[ -z "$ACTIVE_STORAGES" ]]; then
+  msg_error "Kein aktiver Storage mit images-Inhalt gefunden. pvesm status prüfen."
 fi
+
+storage_ok() {
+  echo "$ACTIVE_STORAGES" | grep -qx "$1"
+}
 
 # ------------------------- VM-Größe wählen ---------------------------------
 # Interaktiv (whiptail-Dialoge, tteck-Stil) oder komplett per ENV:
-#   INTERACTIVE=no CORES=4 RAM=8192 DISK_SIZE=64G bash -c "..." 
+#   INTERACTIVE=no CORES=4 RAM=8192 DISK_SIZE=64G bash -c "..."
 if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 ]] && command -v whiptail >/dev/null 2>&1; }; then
   msg_info "Interaktive Konfiguration – jeder Wert per ENV überschreibbar (INTERACTIVE=no)"
 
@@ -99,13 +109,31 @@ if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 
   RAM=$(whiptail --inputbox "RAM in MB (Test: 4096 · Produktion: 16384)" 9 56 "$RAM" 3>&1 1>&2 2>&3) || true
   DISK_SIZE=$(whiptail --inputbox "Systemdisk (Test: 32G · Produktion: 64G+)" 9 56 "$DISK_SIZE" 3>&1 1>&2 2>&3) || true
 
-  STORAGE=$(whiptail --inputbox "Storage für VM-Disk" 9 56 "$STORAGE" 3>&1 1>&2 2>&3) || true
+  # Storage-Auswahl als Menü (nur aktive Storages)
+  MENU_ARGS=()
+  while read -r s; do
+    MENU_ARGS+=("$s" "Storage für die VM-Disk")
+  done <<< "$ACTIVE_STORAGES"
+  if [[ ${#MENU_ARGS[@]} -gt 0 ]]; then
+    [[ -n "$STORAGE" ]] && DEFAULT_STORAGE="$STORAGE" || DEFAULT_STORAGE=$(echo "$ACTIVE_STORAGES" | head -1)
+    STORAGE=$(whiptail --menu "Storage wählen" 12 58 6 "${MENU_ARGS[@]}" 3>&1 1>&2 2>&3 3>&- ) || STORAGE="$DEFAULT_STORAGE"
+  fi
+
   BRIDGE=$(whiptail --inputbox "Netzwerk-Bridge (VLAN optional als BRIDGE,tag=…)" 9 56 "$BRIDGE" 3>&1 1>&2 2>&3) || true
 
   header_info
 fi
 
-# Plausibilitäts-Check der gewählten Werte
+# Storage automatisch wählen, falls nicht gesetzt
+if [[ -z "$STORAGE" ]]; then
+  if storage_ok "local-lvm"; then
+    STORAGE="local-lvm"
+  else
+    STORAGE=$(echo "$ACTIVE_STORAGES" | head -1)
+  fi
+fi
+
+# ------------------------- Plausibilitäts-Checks ---------------------------
 for var in VMID CORES; do
   if ! [[ "${!var}" =~ ^[0-9]+$ ]]; then
     msg_error "$var muss eine Zahl sein (ist: '${!var}')"
@@ -113,6 +141,23 @@ for var in VMID CORES; do
 done
 if ! [[ "$RAM" =~ ^[0-9]+$ ]]; then
   msg_error "RAM muss in MB als Zahl angegeben werden (ist: '$RAM')"
+fi
+if ! storage_ok "$STORAGE"; then
+  msg_error "Storage '$STORAGE' ist nicht aktiv oder hat keinen images-Inhalt.
+  Aktive Storages: $(echo "$ACTIVE_STORAGES" | tr '\n' ' ')"
+fi
+
+# Reicht der Platz auf dem Storage?
+AVAIL_GB=$(pvesm status 2>/dev/null | awk -v s="$STORAGE" '$1==s {printf "%d", $6/1024/1024/1024}')
+DISK_NUM="${DISK_SIZE%[GgMm]}"
+if [[ "$DISK_SIZE" =~ [Mm]$ ]]; then DISK_GB=$((DISK_NUM / 1024)); else DISK_GB="$DISK_NUM"; fi
+NEEDED_GB=$((DISK_GB + 10))
+if [[ -n "$AVAIL_GB" && "$AVAIL_GB" -lt "$NEEDED_GB" ]]; then
+  msg_error "Storage '$STORAGE' hat nur ${AVAIL_GB} GB frei, benötigt: ~${NEEDED_GB} GB."
+fi
+
+if [[ -n "$SSH_KEY" && ! -f "$SSH_KEY" ]]; then
+  msg_error "SSH_KEY-Datei '$SSH_KEY' nicht gefunden."
 fi
 
 echo -e "${BL}---------------- VM-Konfiguration ----------------${CL}"
@@ -126,34 +171,80 @@ echo -e "  SSH-User   : ${GN}${SSH_USER}${CL}"
 echo -e "${BL}---------------------------------------------------${CL}"
 
 # ------------------------- Debian Cloud-Image ------------------------------
-IMG_URL="https://cloud.debian.org/images/cloud/bookworm/${DEBIAN_VERSION}/debian-${DEBIAN_VERSION}-generic-amd64.qcow2"
-IMG_FILE="/tmp/debian-${DEBIAN_VERSION}-generic-amd64.qcow2"
-
-msg_info "Lade Debian ${DEBIAN_VERSION} Cloud-Image herunter ..."
-if wget -q -O "$IMG_FILE" "$IMG_URL"; then
-  msg_ok "Image heruntergeladen ($(du -h "$IMG_FILE" | cut -f1))"
+# cloud.debian.org löscht alte Versionen – "latest" ist der stabile Link.
+# Bei Fehlschlag wird automatisch eine fixe Version versucht.
+if [[ -n "$DEBIAN_VERSION" ]]; then
+  IMG_URLS=(
+    "https://cloud.debian.org/images/cloud/bookworm/${DEBIAN_VERSION}/debian-${DEBIAN_VERSION}-generic-amd64.qcow2"
+    "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+  )
 else
-  msg_error "Download fehlgeschlagen: $IMG_URL"
+  IMG_URLS=(
+    "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
+    "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2"
+  )
+fi
+
+# Bereits vorhanden und plausibel groß? Dann Download überspringen.
+if [[ -f "$IMG_FILE" && $(stat -c%s "$IMG_FILE" 2>/dev/null || echo 0) -gt 200000000 ]]; then
+  msg_ok "Cloud-Image bereits vorhanden ($(du -h "$IMG_FILE" | cut -f1)) – Download übersprungen"
+else
+  msg_info "Lade Debian Cloud-Image herunter ..."
+  rm -f "$IMG_FILE"
+  DOWNLOADED=""
+  for url in "${IMG_URLS[@]}"; do
+    msg_info "  Versuche: $url"
+    if wget -q --show-progress -O "$IMG_FILE" "$url"; then
+      SIZE=$(stat -c%s "$IMG_FILE" 2>/dev/null || echo 0)
+      if [[ "$SIZE" -gt 200000000 ]]; then
+        DOWNLOADED="$url"
+        break
+      fi
+      msg_info "  Datei zu klein (${SIZE} Bytes) – nächster Versuch"
+      rm -f "$IMG_FILE"
+    fi
+  done
+  [[ -z "$DOWNLOADED" ]] && msg_error "Image-Download fehlgeschlagen. Internetverbindung des Hosts prüfen."
+  msg_ok "Image heruntergeladen ($(du -h "$IMG_FILE" | cut -f1)) von ${DOWNLOADED##*/}"
 fi
 
 # ------------------------- VM anlegen --------------------------------------
 msg_info "Erstelle VM ${VMID} (${VM_NAME}) – ${CORES} vCPU / ${RAM} MB RAM / ${DISK_SIZE} ..."
 
-qm create "$VMID" \
+NET0="virtio,bridge=${BRIDGE}"
+[[ -n "$VLAN" ]] && NET0="${NET0},tag=${VLAN}"
+
+if ! qm create "$VMID" \
   --name "$VM_NAME" \
   --cores "$CORES" \
   --memory "$RAM" \
   --balloon 0 \
-  --net0 "virtio,bridge=${BRIDGE}$( [[ -n $VLAN ]] && echo ",tag=${VLAN}" )" \
+  --net0 "$NET0" \
   --scsihw virtio-scsi-pci \
   --ostype l26 \
   --agent enabled=1 \
   --onboot 1 \
-  --boot order=scsi0 &>/dev/null
+  --boot order=scsi0; then
+  qm destroy "$VMID" --purge 2>/dev/null
+  msg_error "VM konnte nicht erstellt werden (siehe Fehlermeldung oben)."
+fi
 
-qm importdisk "$VMID" "$IMG_FILE" "$STORAGE" &>/dev/null
-qm set "$VMID" --scsi0 "${STORAGE}:vm-${VMID}-disk-0,iothread=1,discard=on,ssd=1"
-qm resize "$VMID" scsi0 "$DISK_SIZE"
+if qm importdisk "$VMID" "$IMG_FILE" "$STORAGE" > /tmp/local-news-importdisk.log 2>&1; then
+  msg_ok "VM-Disk importiert"
+else
+  cat /tmp/local-news-importdisk.log >&2
+  qm destroy "$VMID" --purge 2>/dev/null
+  msg_error "Disk-Import fehlgeschlagen (Log: /tmp/local-news-importdisk.log)."
+fi
+
+if ! qm set "$VMID" --scsi0 "${STORAGE}:vm-${VMID}-disk-0,iothread=1,discard=on,ssd=1"; then
+  qm destroy "$VMID" --purge 2>/dev/null
+  msg_error "Konnte VM-Disk nicht anhängen."
+fi
+
+if ! qm resize "$VMID" scsi0 "$DISK_SIZE"; then
+  msg_error "Konnte Disk nicht auf ${DISK_SIZE} vergrößern."
+fi
 
 qm set "$VMID" \
   --ide2 "${SNIPPET_STORAGE}:cloudinit" \
@@ -200,11 +291,11 @@ mkdir -p /opt/local-news
 if [ -d /opt/local-news/.git ]; then
   echo "[INFO] Repository vorhanden – update ..."
   git -C /opt/local-news pull --ff-only || true
-elif [ "\$REPO_URL" != "https://github.com/HatchetMan111/LokalerNewSender.git" ]; then
+elif [ "\$REPO_URL" != "https://github.com/HatchetMan111/LokalerNewSender.git" ] || git ls-remote "\$REPO_URL" >/dev/null 2>&1; then
   echo "[INFO] Klone \$REPO_URL ..."
   git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news
 else
-  echo "[WARN] REPO_URL noch nicht gesetzt – lege Grundstruktur an."
+  echo "[WARN] Repository nicht erreichbar – lege Grundstruktur an."
   mkdir -p /opt/local-news
 fi
 
@@ -273,12 +364,14 @@ msg_ok "Cloud-Init konfiguriert (Installer wird beim ersten Boot ausgeführt)"
 # ------------------------- Starten -----------------------------------------
 if [[ "$START_VM" == "yes" ]]; then
   msg_info "Starte VM ${VMID} ..."
-  qm start "$VMID"
-  msg_ok "VM gestartet"
+  if qm start "$VMID"; then
+    msg_ok "VM gestartet"
+  else
+    msg_error "VM konnte nicht gestartet werden (qm start ${VMID} für Details)."
+  fi
 fi
 
 # ------------------------- Abschluss ---------------------------------------
-IP_HINT="noch unbekannt (Konsole: qm guest cmd ${VMID} network-get-interfaces)"
 echo
 echo -e "${BL}=================================================================${CL}"
 echo -e "${GN}  LOCAL NEWS PLATFORM – VM ${VMID} bereit!${CL}"
@@ -293,7 +386,4 @@ echo
 echo -e "  Weboberfläche : ${GN}http://<VM-IP>${CL}  (LOCAL NEWSROOM Dashboard)"
 echo -e "  API           : ${GN}http://<VM-IP>/api/health${CL}"
 echo -e "  Stack-Ordner  : /opt/local-news (in der VM)"
-echo
-echo -e "  ${RD}Wichtig:${CL} REPO_URL im Script auf dein GitHub-Repo setzen,"
-echo -e "  damit die VM die Plattform automatisch bezieht."
 echo -e "${BL}=================================================================${CL}"
