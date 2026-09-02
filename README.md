@@ -42,19 +42,31 @@ kostenlose Dienste.
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
 ```
 
-Eigene Werte (Beispiel):
+Das Script fragt **interaktiv** ab (whiptail-Dialoge): VM-ID, vCPUs, RAM,
+Disk-Größe, Storage und Bridge — so kannst du für Tests eine kleine VM
+wählen (Default: 2 vCPU / 4 GB / 32 GB) und für Produktion mehr
+(empfohlen: 8 vCPU / 16 GB / 64 GB+).
+
+Ohne Nachfragen (z.B. für Automation) — Werte per ENV setzen:
 
 ```bash
-VMID=9100 CORES=8 RAM=16384 STORAGE=local-lvm \
-REPO_URL=https://github.com/HatchetMan111/LokalerNewSender.git \
+INTERACTIVE=no VMID=9100 CORES=4 RAM=8192 DISK_SIZE=64G \
   bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/LokalerNewSender/main/proxmox/local-news-vm.sh)"
 ```
 
+Weitere ENV-Override-Parameter: `VM_NAME`, `STORAGE`, `BRIDGE`, `VLAN`,
+`SSH_USER`, `SSH_PASSWORD`, `SSH_KEY` (Pfad zu Public-Key-Datei),
+`REPO_URL`, `REPO_BRANCH`, `START_VM=yes|no`.
+
 Das Script:
 - lädt das Debian-12-Cloud-Image
-- erstellt die VM (8 vCPU / 16 GB / 64 GB als MVP-Default, per ENV anpassbar)
+- erstellt die VM in der von dir gewählten Größe
 - konfiguriert Cloud-Init (Installer läuft beim ersten Boot automatisch)
 - installiert Docker + deployt den kompletten Stack
+
+> **Hinweis für kleine Test-VMs:** Mit 2 vCPU / 4 GB dauert der erste
+> Docker-Build mehrere Minuten; die Pipeline (besonders FFmpeg-Render)
+> läuft langsamer. Das reicht für MVP-Tests voll aus.
 
 Fortschritt in der VM beobachten:
 

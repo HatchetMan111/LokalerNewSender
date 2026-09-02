@@ -20,19 +20,22 @@
 set -o pipefail
 
 # ------------------------- Einstellungen (Override per ENV) ----------------
+# Test-Defaults (klein). Für Produktion: CORES=8 RAM=16384 DISK_SIZE=64G
+# Alle Werte sind wählbar: interaktiv (Dialoge) oder per ENV-Variable.
+INTERACTIVE="${INTERACTIVE:-auto}"   # auto | yes | no
 VMID="${VMID:-9100}"
 VM_NAME="${VM_NAME:-local-news}"
-CORES="${CORES:-8}"              # MVP-Empfehlung: 8 vCPU (kleinere Hosts: CORES=4)
-RAM="${RAM:-16384}"              # MB – MVP-Empfehlung: 16384 (kleinere Hosts: RAM=8192)
+CORES="${CORES:-2}"              # Test: 2 vCPU | MVP-Produktion: 8
+RAM="${RAM:-4096}"               # MB – Test: 4096 | MVP-Produktion: 16384
 BRIDGE="${BRIDGE:-vmbr0}"
 VLAN="${VLAN:-}"
 STORAGE="${STORAGE:-local-lvm}"  # VM-Disk Storage
 SNIPPET_STORAGE="${SNIPPET_STORAGE:-local}"
-DISK_SIZE="${DISK_SIZE:-64G}"    # Systemdisk; Media wächst in Docker-Volume mit
+DISK_SIZE="${DISK_SIZE:-32G}"    # Test: 32G | MVP-Produktion: 64G+
 DEBIAN_VERSION="${DEBIAN_VERSION:-12.7}"
 SSH_USER="${SSH_USER:-newsadmin}"
 SSH_PASSWORD="${SSH_PASSWORD:-ChangeMe!2026}"   # bitte ändern oder SSH_KEY setzen
-SSH_KEY="${SSH_KEY:-}"                          # optional: Public-Key für Login
+SSH_KEY="${SSH_KEY:-}"                          # optional: Pfad zu Public-Key-Datei
 REPO_URL="${REPO_URL:-https://github.com/HatchetMan111/LokalerNewSender.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
@@ -83,6 +86,44 @@ if ! pvesm status | awk '{print $1}' | grep -qx "$STORAGE"; then
   msg_error "Storage '$STORAGE' nicht gefunden. Vorhandene Storages:"
   pvesm status | awk 'NR>1 {print "  - " $1}' >&2
 fi
+
+# ------------------------- VM-Größe wählen ---------------------------------
+# Interaktiv (whiptail-Dialoge, tteck-Stil) oder komplett per ENV:
+#   INTERACTIVE=no CORES=4 RAM=8192 DISK_SIZE=64G bash -c "..." 
+if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 ]] && command -v whiptail >/dev/null 2>&1; }; then
+  msg_info "Interaktive Konfiguration – jeder Wert per ENV überschreibbar (INTERACTIVE=no)"
+
+  VMID=$(whiptail --inputbox "VM-ID der neuen VM" 9 56 "$VMID" 3>&1 1>&2 2>&3) || true
+  VM_NAME=$(whiptail --inputbox "VM-Name" 9 56 "$VM_NAME" 3>&1 1>&2 2>&3) || true
+  CORES=$(whiptail --inputbox "vCPUs (Test: 2 · Produktion: 8)" 9 56 "$CORES" 3>&1 1>&2 2>&3) || true
+  RAM=$(whiptail --inputbox "RAM in MB (Test: 4096 · Produktion: 16384)" 9 56 "$RAM" 3>&1 1>&2 2>&3) || true
+  DISK_SIZE=$(whiptail --inputbox "Systemdisk (Test: 32G · Produktion: 64G+)" 9 56 "$DISK_SIZE" 3>&1 1>&2 2>&3) || true
+
+  STORAGE=$(whiptail --inputbox "Storage für VM-Disk" 9 56 "$STORAGE" 3>&1 1>&2 2>&3) || true
+  BRIDGE=$(whiptail --inputbox "Netzwerk-Bridge (VLAN optional als BRIDGE,tag=…)" 9 56 "$BRIDGE" 3>&1 1>&2 2>&3) || true
+
+  header_info
+fi
+
+# Plausibilitäts-Check der gewählten Werte
+for var in VMID CORES; do
+  if ! [[ "${!var}" =~ ^[0-9]+$ ]]; then
+    msg_error "$var muss eine Zahl sein (ist: '${!var}')"
+  fi
+done
+if ! [[ "$RAM" =~ ^[0-9]+$ ]]; then
+  msg_error "RAM muss in MB als Zahl angegeben werden (ist: '$RAM')"
+fi
+
+echo -e "${BL}---------------- VM-Konfiguration ----------------${CL}"
+echo -e "  VMID       : ${GN}${VMID}${CL}"
+echo -e "  Name       : ${GN}${VM_NAME}${CL}"
+echo -e "  vCPU       : ${GN}${CORES}${CL}"
+echo -e "  RAM        : ${GN}$((RAM / 1024)) GB${CL} (${RAM} MB)"
+echo -e "  Disk       : ${GN}${DISK_SIZE}${CL}"
+echo -e "  Storage    : ${GN}${STORAGE}${CL}   Bridge: ${GN}${BRIDGE}${CL}"
+echo -e "  SSH-User   : ${GN}${SSH_USER}${CL}"
+echo -e "${BL}---------------------------------------------------${CL}"
 
 # ------------------------- Debian Cloud-Image ------------------------------
 IMG_URL="https://cloud.debian.org/images/cloud/bookworm/${DEBIAN_VERSION}/debian-${DEBIAN_VERSION}-generic-amd64.qcow2"
