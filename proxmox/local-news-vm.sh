@@ -87,7 +87,17 @@ if [[ $EUID -ne 0 ]]; then
   msg_error "Bitte als root ausführen (oder sudo -i)."
 fi
 if qm status "$VMID" &>/dev/null; then
-  msg_error "VMID $VMID existiert bereits. Anderen Wert setzen: VMID=9101 ..."
+  if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 ]] && command -v whiptail >/dev/null 2>&1; }; then
+    if whiptail --yesno "VMID ${VMID} existiert bereits.\n\nLöschen und neu erstellen? (Cloud-Init läuft nur beim ersten Boot)" 10 58 3>&1 1>&2 2>&3; then
+      msg_info "Lösche bestehende VM ${VMID} ..."
+      qm stop "$VMID" --timeout 30 2>/dev/null; qm destroy "$VMID" --purge
+      msg_ok "VM ${VMID} gelöscht"
+    else
+      msg_error "Abgebrochen. Wähle eine andere VMID oder lösche VM ${VMID} manuell."
+    fi
+  else
+    msg_error "VMID $VMID existiert bereits. Anderen Wert setzen: VMID=9101 ... (oder: qm destroy $VMID --purge)"
+  fi
 fi
 
 # Offline/beschädigte Storages (z.B. ausgefallenes NFS) dürfen das Script
@@ -420,9 +430,22 @@ exit 1
 INSTALLER_EOF
 
 
-# User-Data YAML: Installer einbetten + systemd-Retry-Unit + runcmd
+# User-Data YAML: Benutzer + Passwort-Login (cicustom ersetzt das PVE-User-Data,
+# daher müssen ciuser/cipassword hier selbst gesetzt werden!) + Installer + runcmd
 cat > "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
 #cloud-config
+hostname: ${VM_NAME}
+users:
+  - default
+  - name: ${SSH_USER}
+    shell: /bin/bash
+    groups: [sudo]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    plain_text_passwd: '${SSH_PASSWORD}'
+    lock_passwd: false
+ssh_pwauth: true
+chpasswd:
+  expire: false
 write_files:
   - path: /opt/local-news-install.sh
     permissions: '0755'
