@@ -584,21 +584,27 @@ fi
 IP_SHOW="${VM_IP:-<VM-IP>}"
 echo
 echo -e "${BL}=================================================================${CL}"
-echo -e "${GN}  LOCAL NEWS PLATFORM – VM ${VMID} bereit!${CL}"
+echo -e "${GN}  LOCAL NEWS PLATFORM – VM ${VMID}${CL}"
 echo
-echo -e "  SSH-Login : ${YW}${SSH_USER}@${IP_SHOW}${CL}"
-[[ -z "$SSH_KEY" ]] && echo -e "  Passwort  : ${YW}${SSH_PASSWORD}${CL}  (bitte ändern!)"
-echo
-echo -e "  Die Installation läuft nach dem ersten Boot automatisch ab"
-echo -e "  (Docker-Build dauert einige Minuten):"
-echo -e "    Fortschritt : ${YW}qm terminal ${VMID}${CL} oder in der VM:"
-echo -e "                  ${YW}tail -f /var/log/local-news-install.log${CL}"
-echo
-if [[ "$START_VM" == "yes" ]]; then
-  echo -e "  Weboberfläche : ${GN}http://${IP_SHOW}${CL}  (LOCAL NEWSROOM Dashboard)"
-  echo -e "  API           : ${GN}http://${IP_SHOW}/api/health${CL}"
-else
-  echo -e "  Weboberfläche : ${GN}http://<VM-IP>${CL}  (VM starten: qm start ${VMID})"
+if [[ -n "$VM_IP" && "$WEB_OK" == "yes" ]]; then
+  echo -e "  ${GN}✓ Weboberfläche ist online: http://${IP_SHOW}${CL}"
+elif [[ -n "$VM_IP" ]]; then
+  echo -e "  ${YW}○ Weboberfläche noch nicht erreichbar (Build läuft ggf. noch)${CL}"
 fi
+echo
+echo -e "  ${BL}Zugangsdaten:${CL}"
+echo -e "  SSH-Benutzer : ${GN}${SSH_USER}${CL}   (Login: ssh ${SSH_USER}@${IP_SHOW})"
+[[ -z "$SSH_KEY" ]] && echo -e "  SSH-Passwort : ${YW}${SSH_PASSWORD}${CL}  (bitte ändern!)"
+echo -e "  Konsolen-Login (qm terminal ${VMID}): ${GN}${SSH_USER}${CL} / ${YW}${SSH_PASSWORD}${CL}"
+echo
+echo -e "  Weboberfläche : ${GN}http://${IP_SHOW}${CL}  (LOCAL NEWSROOM Dashboard)"
+echo -e "  API           : ${GN}http://${IP_SHOW}/api/health${CL}"
 echo -e "  Stack-Ordner  : /opt/local-news (in der VM)"
+echo
+if [[ -n "$VM_IP" && "$WEB_OK" != "yes" ]]; then
+  echo -e "  ${BL}Status prüfen:${CL}"
+  echo -e "    ssh ${SSH_USER}@${IP_SHOW}"
+  echo -e "    tail -f /var/log/local-news-install.log"
+  echo -e "    sudo docker compose -f /opt/local-news/docker-compose.yml ps"
+fi
 echo -e "${BL}=================================================================${CL}"
