@@ -128,7 +128,7 @@ if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 
 
   # Statische IP: bei DHCP-Problemen (z.B. Fritzbox vergibt nichts) deterministisch.
   DEFAULT_STATIC="$STATIC_IP"
-  [[ -z "$DEFAULT_STATIC" && "$BRIDGE" =~ ^vmbr ]] && DEFAULT_STATIC="$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{sub(/\..*/, "", $4); print $4".220"}' | head -1)"
+  [[ -z "$DEFAULT_STATIC" && "$BRIDGE" =~ ^vmbr ]] && DEFAULT_STATIC="$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{split($4,a,"/"); split(a[1],b,"."); print b[1]"."b[2]"."b[3]".220"}' | head -1)"
   STATIC_IP=$(whiptail --inputbox "Statische IP der VM (empfohlen! leer = DHCP versuchen)\nBeispiel: 192.168.178.220" 10 56 "$DEFAULT_STATIC" 3>&1 1>&2 2>&3) || true
 
   header_info
@@ -432,9 +432,10 @@ fi
 
 # ------------------------- IP ermitteln ------------------------------------
 # qemu-guest-agent wird erst beim ersten Boot per Cloud-Init installiert –
-# das kann mehrere Minuten dauern. Wir warten bis zu 5 Minuten und haben
+# das kann mehrere Minuten dauern. Wir warten bis zu 3 Minuten und haben
 # einen ARP/MAC-Fallback. Abschaltbar mit WAIT_IP=no.
-VM_IP=""
+# Bei statischer IP (STATIC_IP) entfällt das Warten komplett.
+VM_IP="${VM_IP:-}"
 
 function get_ip_by_agent {
   if [[ "$DEBUG" == "yes" ]]; then
@@ -454,25 +455,18 @@ except Exception:
 }
 
 function get_ip_by_arp {
-  # VM-MAC aus Config holen und im ARP-Cache des Hosts suchen
-  local mac
-  mac=$(qm config "$VMID" 2>/dev/null | grep '^net0:' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
-  [[ -z "$mac" ]] && return
-  ip neigh show 2>/dev/null | awk -v m="$(echo "$mac" | tr 'A-F' 'a-f')" 'tolower($5)==m {print $1}' | head -1
-}
-
-function get_ip_by_arp {
   # Ohne Guest-Agent: VM-MAC aus Config, Broadcast-Ping zwingt die VM in den
-  # ARP-Cache des Hosts, dann MAC -> IP auflösen.
+  # ARP-Cache des Hosts, dann MAC -> IP auflösen (nur IPv4, kein fe80::).
   local mac bcast ip_prefix
   mac=$(qm config "$VMID" 2>/dev/null | grep '^net0:' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
   [[ -z "$mac" ]] && return
-  ip_prefix=$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}' | head -1)
+  ip_prefix=$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | head -1)
   if [[ "$ip_prefix" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
     bcast="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.255"
     ping -b -c 1 -W 1 "$bcast" >/dev/null 2>&1
   fi
-  ip neigh show 2>/dev/null | awk -v m="$(echo "$mac" | tr 'A-F' 'a-f')" 'tolower($5)==m {print $1}' | head -1
+  ip neigh show 2>/dev/null | awk -v m="$(echo "$mac" | tr 'A-F' 'a-f')" \
+    '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && tolower($5)==m {print $1}' | head -1
 }
 
 VM_MAC=$(qm config "$VMID" 2>/dev/null | grep '^net0:' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
