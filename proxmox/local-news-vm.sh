@@ -43,7 +43,10 @@ REPO_URL="${REPO_URL:-https://github.com/HatchetMan111/LokalerNewSender.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 16)}"
 START_VM="${START_VM:-yes}"
-WAIT_IP="${WAIT_IP:-yes}"        # yes = bis zu 5 Min. auf die IP warten
+WAIT_IP="${WAIT_IP:-yes}"        # yes = bis zu 3 Min. auf die IP warten
+STATIC_IP="${STATIC_IP:-}"       # z.B. 192.168.178.220 – leer = DHCP (Fritzbox)
+GATEWAY="${GATEWAY:-}"           # leer = Default-Gateway des Hosts
+DEBUG="${DEBUG:-no}"             # yes = rohe Guest-Agent-Ausgaben anzeigen
 
 # ------------------------- Farben & Helpers --------------------------------
 RD=$(echo "\033[01;31m")
@@ -123,7 +126,24 @@ if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 
 
   BRIDGE=$(whiptail --inputbox "Netzwerk-Bridge (VLAN optional als BRIDGE,tag=…)" 9 56 "$BRIDGE" 3>&1 1>&2 2>&3) || true
 
+  # Statische IP: bei DHCP-Problemen (z.B. Fritzbox vergibt nichts) deterministisch.
+  DEFAULT_STATIC="$STATIC_IP"
+  [[ -z "$DEFAULT_STATIC" && "$BRIDGE" =~ ^vmbr ]] && DEFAULT_STATIC="$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{sub(/\..*/, "", $4); print $4".220"}' | head -1)"
+  STATIC_IP=$(whiptail --inputbox "Statische IP der VM (empfohlen! leer = DHCP versuchen)\nBeispiel: 192.168.178.220" 10 56 "$DEFAULT_STATIC" 3>&1 1>&2 2>&3) || true
+
   header_info
+fi
+
+# ------------------------- Statische IP (wird nach VM-Create gesetzt) ------
+if [[ -n "$STATIC_IP" ]]; then
+  if ! [[ "$STATIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    msg_error "STATIC_IP sieht nicht wie eine IPv4 aus: '$STATIC_IP'"
+  fi
+  [[ -z "$GATEWAY" ]] && GATEWAY=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
+  PREFIX=$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{split($4,a,"/"); print a[2]}' | head -1)
+  [[ -z "$PREFIX" ]] && PREFIX=24
+  VM_IP="$STATIC_IP"
+  msg_ok "Statische IP wird konfiguriert: ${STATIC_IP}/${PREFIX} (Gateway: ${GATEWAY})"
 fi
 
 # Storage automatisch wählen, falls nicht gesetzt
@@ -289,6 +309,13 @@ else
   qm set "$VMID" --cipassword "$SSH_PASSWORD"
 fi
 
+# Statische IP (Cloud-Init): umgeht DHCP-Probleme komplett
+if [[ -n "$STATIC_IP" ]]; then
+  if ! qm set "$VMID" --ipconfig0 "ip=${STATIC_IP}/${PREFIX},gw=${GATEWAY}" --nameserver "${GATEWAY}"; then
+    msg_error "Konnte statische IP nicht setzen (qm set ${VMID} --ipconfig0 ...)."
+  fi
+fi
+
 msg_ok "VM ${VMID} erstellt"
 
 # ------------------------- Cloud-Init User-Data ----------------------------
@@ -410,6 +437,9 @@ fi
 VM_IP=""
 
 function get_ip_by_agent {
+  if [[ "$DEBUG" == "yes" ]]; then
+    qm guest cmd "$VMID" network-get-interfaces 2>&1
+  fi
   qm guest cmd "$VMID" network-get-interfaces 2>/dev/null | python3 -c "
 import json, sys
 try:
@@ -447,7 +477,7 @@ function get_ip_by_arp {
 
 VM_MAC=$(qm config "$VMID" 2>/dev/null | grep '^net0:' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
 
-if [[ "$START_VM" == "yes" && "$WAIT_IP" == "yes" ]]; then
+if [[ "$START_VM" == "yes" && "$WAIT_IP" == "yes" && -z "$VM_IP" ]]; then
   msg_info "Warte auf VM-IP – jederzeit mit ENTER überspringen ..."
   for i in $(seq 1 36); do
     VM_IP=$(get_ip_by_agent)
@@ -474,6 +504,20 @@ if [[ -z "$VM_IP" && "$START_VM" == "yes" ]]; then
   msg_info "  Host: qm guest cmd ${VMID} network-get-interfaces   (Agent muss laufen)"
   msg_info "  Host: ip neigh | grep -i \"${VM_MAC:-MAC}\""
   msg_info "Hinweis: Erster Boot + Docker-Build dauern auf kleinen Hosts 5–15 Min."
+fi
+
+# Bei statischer IP: kurz warten bis die VM per Ping erreichbar ist
+if [[ -n "$STATIC_IP" && "$START_VM" == "yes" ]]; then
+  msg_info "Warte bis VM unter ${STATIC_IP} per Ping erreichbar ist ..."
+  for i in $(seq 1 24); do
+    if ping -c 1 -W 1 "$STATIC_IP" >/dev/null 2>&1; then
+      msg_ok "VM antwortet auf Ping: ${STATIC_IP}"
+      break
+    fi
+    [[ $((i % 6)) -eq 0 ]] && msg_info "  ... warte noch ($((i * 5)) s) – Boot dauert etwas"
+    read -t 5 -n 1 -s key 2>/dev/null && break
+  done
+  VM_IP="$STATIC_IP"
 fi
 
 # ------------------------- Abschluss ---------------------------------------
