@@ -379,19 +379,56 @@ if [[ "$START_VM" == "yes" ]]; then
   fi
 fi
 
+# ------------------------- IP ermitteln ------------------------------------
+# qemu-guest-agent wird per Cloud-Init installiert; wir warten bis zu ~90 s
+# auf die IP. Bei Timeout gibt es Hinweise zum manuellen Auslesen.
+VM_IP=""
+if [[ "$START_VM" == "yes" ]]; then
+  msg_info "Warte auf VM-IP (QEMU Guest Agent) ..."
+  for i in $(seq 1 30); do
+    VM_IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null \
+      | python3 -c "
+import json, sys
+try:
+    for iface in json.load(sys.stdin):
+        for addr in iface.get('ip-addresses', []):
+            ip = addr.get('ip-address', '')
+            if addr.get('ip-address-type') == 'ipv4' and not ip.startswith('127.'):
+                print(ip)
+except Exception:
+    pass
+" | head -1)
+    if [[ -n "$VM_IP" ]]; then
+      msg_ok "VM-IP: $VM_IP"
+      break
+    fi
+    sleep 3
+  done
+  if [[ -z "$VM_IP" ]]; then
+    msg_info "Konnte IP nicht automatisch ermitteln (Agent noch nicht bereit)."
+    msg_info "IP nachsehen mit: qm guest cmd ${VMID} network-get-interfaces"
+  fi
+fi
+
 # ------------------------- Abschluss ---------------------------------------
+IP_SHOW="${VM_IP:-<VM-IP>}"
 echo
 echo -e "${BL}=================================================================${CL}"
 echo -e "${GN}  LOCAL NEWS PLATFORM – VM ${VMID} bereit!${CL}"
 echo
-echo -e "  SSH-Login : ${YW}${SSH_USER}@<VM-IP>${CL}"
+echo -e "  SSH-Login : ${YW}${SSH_USER}@${IP_SHOW}${CL}"
 [[ -z "$SSH_KEY" ]] && echo -e "  Passwort  : ${YW}${SSH_PASSWORD}${CL}  (bitte ändern!)"
 echo
-echo -e "  Die Installation läuft nach dem ersten Boot automatisch ab:"
+echo -e "  Die Installation läuft nach dem ersten Boot automatisch ab"
+echo -e "  (Docker-Build dauert einige Minuten):"
 echo -e "    Fortschritt : ${YW}qm terminal ${VMID}${CL} oder in der VM:"
 echo -e "                  ${YW}tail -f /var/log/local-news-install.log${CL}"
 echo
-echo -e "  Weboberfläche : ${GN}http://<VM-IP>${CL}  (LOCAL NEWSROOM Dashboard)"
-echo -e "  API           : ${GN}http://<VM-IP>/api/health${CL}"
+if [[ "$START_VM" == "yes" ]]; then
+  echo -e "  Weboberfläche : ${GN}http://${IP_SHOW}${CL}  (LOCAL NEWSROOM Dashboard)"
+  echo -e "  API           : ${GN}http://${IP_SHOW}/api/health${CL}"
+else
+  echo -e "  Weboberfläche : ${GN}http://<VM-IP>${CL}  (VM starten: qm start ${VMID})"
+fi
 echo -e "  Stack-Ordner  : /opt/local-news (in der VM)"
 echo -e "${BL}=================================================================${CL}"
