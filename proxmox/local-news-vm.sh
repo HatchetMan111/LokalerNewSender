@@ -310,6 +310,12 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
 echo "=== Local News Platform In-VM-Installer ==="
 date
 
+# ---- Basispakete (Guest-Agent zuerst, damit die IP auf dem Host auftaucht) ----
+echo "[INFO] Installiere Basispakete (curl, git, qemu-guest-agent) ..."
+apt-get update -qq || true
+apt-get install -y -qq curl git qemu-guest-agent || true
+systemctl enable --now qemu-guest-agent || true
+
 # ---- Docker installieren ----
 if ! command -v docker >/dev/null 2>&1; then
   echo "[INFO] Installiere Docker ..."
@@ -368,11 +374,6 @@ INSTALLER_EOF
 # User-Data YAML bauen: Installer einbetten (eingerückt) + runcmd
 cat > "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
 #cloud-config
-package_update: true
-packages:
-  - curl
-  - git
-  - qemu-guest-agent
 YAML_EOF
 
 cat >> "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
@@ -430,6 +431,22 @@ function get_ip_by_arp {
   ip neigh show 2>/dev/null | awk -v m="$(echo "$mac" | tr 'A-F' 'a-f')" 'tolower($5)==m {print $1}' | head -1
 }
 
+function get_ip_by_arp {
+  # Ohne Guest-Agent: VM-MAC aus Config, Broadcast-Ping zwingt die VM in den
+  # ARP-Cache des Hosts, dann MAC -> IP auflösen.
+  local mac bcast ip_prefix
+  mac=$(qm config "$VMID" 2>/dev/null | grep '^net0:' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
+  [[ -z "$mac" ]] && return
+  ip_prefix=$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}' | head -1)
+  if [[ "$ip_prefix" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+    bcast="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.255"
+    ping -b -c 1 -W 1 "$bcast" >/dev/null 2>&1
+  fi
+  ip neigh show 2>/dev/null | awk -v m="$(echo "$mac" | tr 'A-F' 'a-f')" 'tolower($5)==m {print $1}' | head -1
+}
+
+VM_MAC=$(qm config "$VMID" 2>/dev/null | grep '^net0:' | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
+
 if [[ "$START_VM" == "yes" && "$WAIT_IP" == "yes" ]]; then
   msg_info "Warte auf VM-IP – jederzeit mit ENTER überspringen ..."
   for i in $(seq 1 36); do
@@ -446,16 +463,17 @@ if [[ "$START_VM" == "yes" && "$WAIT_IP" == "yes" ]]; then
     if [[ $((i % 6)) -eq 0 ]]; then
       VM_STATE=$(qm status "$VMID" 2>/dev/null | awk '/status:/ {print $2}')
       AGENT_STATE="nein"; qm guest cmd "$VMID" ping >/dev/null 2>&1 && AGENT_STATE="ja"
-      msg_info "  ... $((i * 5))s – VM: ${VM_STATE:-?} · Guest-Agent: ${AGENT_STATE} · ARP: -"
+      msg_info "  ... $((i * 5))s – VM: ${VM_STATE:-?} · Agent: ${AGENT_STATE} · MAC: ${VM_MAC:-?}"
     fi
   done
-  if [[ -z "$VM_IP" ]]; then
-    msg_info "IP automatisch nicht ermittelbar. Nachsehen mit:"
-    msg_info "  qm guest cmd ${VMID} network-get-interfaces   (braucht fertig gebootete VM)"
-    msg_info "  oder: ip neigh | grep <MAC>   (MAC: qm config ${VMID} | grep net0)"
-    msg_info "Hinweis: Der erste Boot (Cloud-Init + Docker-Build) dauert auf kleinen"
-    msg_info "Hosts gerne 5–15 Minuten – die Weboberfläche erscheint etwas später."
-  fi
+fi
+
+if [[ -z "$VM_IP" && "$START_VM" == "yes" ]]; then
+  msg_info "IP nicht automatisch ermittelbar – so findest du sie:"
+  [[ -n "$VM_MAC" ]] && msg_info "  Router (z.B. Fritzbox): Gerät mit MAC ${VM_MAC} suchen"
+  msg_info "  Host: qm guest cmd ${VMID} network-get-interfaces   (Agent muss laufen)"
+  msg_info "  Host: ip neigh | grep -i \"${VM_MAC:-MAC}\""
+  msg_info "Hinweis: Erster Boot + Docker-Build dauern auf kleinen Hosts 5–15 Min."
 fi
 
 # ------------------------- Abschluss ---------------------------------------
