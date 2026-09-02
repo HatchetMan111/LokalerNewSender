@@ -114,11 +114,6 @@ def task_run_pipeline(episode_id: int) -> dict:
             _set_status(db, episode, "scripting")
             llm = get_llm()
             for item in items:
-                text_src = None
-                if item.article_id:
-                    art = db.get(Article, item.article_id)
-                    text_src = art.original_text or art.ai_summary
-                    started = datetime.now(timezone.utc)
                 if item.seg_type == "intro":
                     item.script = (
                         f"Guten Abend und herzlich willkommen zu den Lokalnachrichten "
@@ -189,7 +184,7 @@ def task_run_pipeline(episode_id: int) -> dict:
                 item.status = "rendered"
             episode.video_file = result["video"]
             episode.audio_file = result["audio"]
-            episode.script = result["json"]
+            episode.script = result["production"]  # Production JSON als Dict (JSONB)
             _set_status(db, episode, "rendered")
             _set_status(db, episode, "review")
 

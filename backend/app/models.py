@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
@@ -12,7 +12,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -83,7 +83,7 @@ class Episode(Base):
     __tablename__ = "episodes"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     city_id: Mapped[int | None] = mapped_column(ForeignKey("cities.id"))
-    date: Mapped[str] = mapped_column(Date)
+    date: Mapped[date] = mapped_column(Date)
     title: Mapped[str | None] = mapped_column(String(240))
     format: Mapped[str] = mapped_column(String(60), default="daily_news")
     target_duration: Mapped[int] = mapped_column(Integer, default=600)
@@ -97,6 +97,11 @@ class Episode(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    city: Mapped["City | None"] = relationship(lazy="joined")
+    items: Mapped[list["EpisodeItem"]] = relationship(
+        back_populates="episode", order_by="EpisodeItem.position", cascade="all, delete-orphan"
+    )
 
 
 class EpisodeItem(Base):
@@ -114,6 +119,9 @@ class EpisodeItem(Base):
     video_file: Mapped[str | None] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(30), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    episode: Mapped["Episode"] = relationship(back_populates="items")
+    article: Mapped["Article | None"] = relationship(lazy="joined")
 
 
 class AIJob(Base):

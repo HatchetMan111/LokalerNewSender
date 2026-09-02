@@ -117,7 +117,7 @@ def render_episode(episode, items) -> dict:
     with open(paths["json"], "w", encoding="utf-8") as fh:
         json.dump(production, fh, ensure_ascii=False, indent=2)
 
-    return {"video": video_file, "audio": audio_file, "json": paths["json"]}
+    return {"video": video_file, "audio": audio_file, "json": paths["json"], "production": production}
 
 
 def video_tmp(item_id: int) -> str:

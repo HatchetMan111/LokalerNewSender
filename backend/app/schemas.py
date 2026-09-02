@@ -1,5 +1,5 @@
-from datetime import date, datetime
-from typing import Any
+from datetime import date as _date
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -7,7 +7,7 @@ from pydantic import BaseModel
 class CityOut(BaseModel):
     id: int
     name: str
-    state: str | None
+    state: Optional[str] = None
     radius_km: int
 
     class Config:
@@ -16,23 +16,23 @@ class CityOut(BaseModel):
 
 class EpisodeCreate(BaseModel):
     city_id: int
-    date: date | None = None
+    date: Optional[_date] = None
     format: str = "daily_news"
     duration: int = 600
 
 
 class EpisodeOut(BaseModel):
     id: int
-    city_id: int | None
-    date: date
-    title: str | None
+    city_id: Optional[int] = None
+    date: _date
+    title: Optional[str] = None
     format: str
     target_duration: int
     status: str
-    script: dict[str, Any] | None
-    audio_file: str | None
-    video_file: str | None
-    error: str | None
+    script: Optional[dict[str, Any]] = None
+    audio_file: Optional[str] = None
+    video_file: Optional[str] = None
+    error: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -43,10 +43,10 @@ class EpisodeItemOut(BaseModel):
     position: int
     seg_type: str
     duration: int
-    headline: str | None
-    script: str | None
-    voice_file: str | None
-    video_file: str | None
+    headline: Optional[str] = None
+    script: Optional[str] = None
+    voice_file: Optional[str] = None
+    video_file: Optional[str] = None
     status: str
 
     class Config:
@@ -56,11 +56,11 @@ class EpisodeItemOut(BaseModel):
 class ArticleOut(BaseModel):
     id: int
     title: str
-    url: str | None
-    location: str | None
-    category: str | None
+    url: Optional[str] = None
+    location: Optional[str] = None
+    category: Optional[str] = None
     importance_score: int
-    ai_summary: str | None
+    ai_summary: Optional[str] = None
     status: str
 
     class Config:
@@ -68,9 +68,5 @@ class ArticleOut(BaseModel):
 
 
 class ScriptUpdate(BaseModel):
-    headline: str | None = None
-    script: str | None = None
-
-
-class PipelineStep(BaseModel):
-    step: str  # import | analyze | select | script | voice | render | publish
+    headline: Optional[str] = None
+    script: Optional[str] = None

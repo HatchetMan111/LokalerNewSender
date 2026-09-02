@@ -350,6 +350,10 @@ cat > "/tmp/local-news-install-${VMID}.sh" <<INSTALLER_EOF
 # und systemd-Retry bei jedem Boot, bis der Stack läuft)
 exec > /var/log/local-news-install.log 2>&1
 
+# Lock: systemd-Unit und cloud-init runcmd könnten parallel laufen
+exec 9>/var/lock/local-news-install.lock
+flock -n 9 || { log "[INFO] Installer läuft bereits (Lock) – beende."; exit 0; }
+
 REPO_URL="${CLONE_URL}"
 REPO_BRANCH="${REPO_BRANCH}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
@@ -383,10 +387,10 @@ fi
 # ---- Repository laden (Tarball vom Host bevorzugt, sonst git/codeload) ----
 if [ ! -f /opt/local-news/docker-compose.yml ]; then
   rm -rf /opt/local-news
-  if [ -f /opt/local-news.tar.gz ]; then
+  if [ -f /opt/local-news-repo.tar.gz ]; then
     log "[INFO] Entpacke vom Host übermittelten Repo-Tarball ..."
     mkdir -p /opt/local-news
-    tar xzf /opt/local-news.tar.gz -C /opt/local-news --strip-components=1
+    tar xzf /opt/local-news-repo.tar.gz -C /opt/local-news --strip-components=1
   else
     log "[INFO] Klone \$REPO_URL ..."
     if ! git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news; then
@@ -629,7 +633,7 @@ fi
 # nach dem VM-Start erneut versucht, falls der Agent noch nicht bereit war)
 function push_repo_to_vm {
   [[ -f "$REPO_TARBALL" ]] || return 1
-  qm guest push "$VMID" "$REPO_TARBALL" "/opt/local-news.tar.gz" 2>/dev/null
+  qm guest push "$VMID" "$REPO_TARBALL" "/opt" 2>/dev/null
 }
 
 function get_install_progress {
@@ -651,7 +655,7 @@ except Exception:
 # Installer (neu) anstoßen.
 if [[ "$START_VM" == "yes" ]]; then
   if push_repo_to_vm; then
-    msg_ok "Repo-Tarball in VM übertragen (/opt/local-news.tar.gz)"
+    msg_ok "Repo-Tarball in VM übertragen (/opt/local-news-repo.tar.gz)"
     qm guest exec "$VMID" -- systemctl restart local-news-install >/dev/null 2>&1 \
       && msg_ok "Installer in VM (neu) gestartet"
   fi
@@ -661,11 +665,21 @@ fi
 if [[ "$START_VM" == "yes" && -n "$VM_IP" ]]; then
   msg_info "Prüfe Weboberfläche unter http://${VM_IP} – auf kleinen Hosts dauert der Build 15–20 Minuten"
   WEB_OK=""
+  PUSHED="no"
+  push_repo_to_vm && PUSHED="yes"
   for i in $(seq 1 240); do
     if curl -s -m 3 "http://${VM_IP}/api/health" 2>/dev/null | grep -q '"ok"'; then
       WEB_OK="yes"
       msg_ok "Weboberfläche ist ERREICHBAR: http://${VM_IP}"
       break
+    fi
+    # Agent kam evtl. erst später hoch -> Tarball jetzt nachschieben
+    if [[ "$PUSHED" == "no" ]] && [[ $((i % 12)) -eq 1 ]]; then
+      if push_repo_to_vm; then
+        PUSHED="yes"
+        msg_ok "Repo-Tarball nachträglich in VM übertragen – Installer startet"
+        qm guest exec "$VMID" -- systemctl restart local-news-install >/dev/null 2>&1 || true
+      fi
     fi
     if read -t 5 -n 1 -s key 2>/dev/null; then
       msg_info "Prüfung übersprungen."

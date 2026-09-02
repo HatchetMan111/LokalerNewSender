@@ -159,7 +159,7 @@ async function approveEpisode() {
 async function loadArticles() {
   const cityId = $("city").value;
   const articles = await api(`/api/articles?city_id=${cityId}&limit=100`);
-  $("articles-meta").textContent = `${articles.length} Artikel`;
+  $("articles-meta").textContent = `${articles.length} Nachrichten geladen`;
   $("articles-table").querySelector("tbody").innerHTML = articles
     .map(
       (a) => `<tr>
