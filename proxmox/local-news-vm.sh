@@ -575,13 +575,27 @@ if [[ -n "$STATIC_IP" && "$START_VM" == "yes" ]]; then
   VM_IP="$STATIC_IP"
 fi
 
+function get_install_progress {
+  # Letzte Zeile des Installer-Logs via Guest-Agent (falls der läuft)
+  qm guest exec "$VMID" -- tail -n 1 /var/log/local-news-install.log 2>/dev/null \
+    | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    out = (d.get('out-data') or '').strip().splitlines()
+    if out: print(out[-1][:120])
+except Exception:
+    pass
+" | head -1
+}
+
 # ------------------------- Erreichbarkeit prüfen ---------------------------
 # Nicht behaupten, sondern testen: Warten bis /api/health vom Stack antwortet
-# (Docker-Build kann einige Minuten dauern). ENTER überspringt.
+# (Docker-Build kann auf kleinen Hosts 15-20 Min dauern). ENTER überspringt.
 if [[ "$START_VM" == "yes" && -n "$VM_IP" ]]; then
-  msg_info "Prüfe Weboberfläche unter http://${VM_IP} (Docker-Build läuft noch einige Minuten) ..."
+  msg_info "Prüfe Weboberfläche unter http://${VM_IP} – auf kleinen Hosts dauert der Build 15–20 Minuten"
   WEB_OK=""
-  for i in $(seq 1 120); do
+  for i in $(seq 1 240); do
     if curl -s -m 3 "http://${VM_IP}/api/health" 2>/dev/null | grep -q '"ok"'; then
       WEB_OK="yes"
       msg_ok "Weboberfläche ist ERREICHBAR: http://${VM_IP}"
@@ -592,13 +606,16 @@ if [[ "$START_VM" == "yes" && -n "$VM_IP" ]]; then
       break
     fi
     if [[ $((i % 12)) -eq 0 ]]; then
-      msg_info "  ... $((i * 5))s – Build läuft ggf. noch; Details: ssh ${SSH_USER}@${VM_IP} → tail -f /var/log/local-news-install.log"
+      PROGRESS=$(get_install_progress)
+      [[ -n "$PROGRESS" ]] && msg_info "  ... $((i * 5))s · Installer: ${PROGRESS}" \
+                             || msg_info "  ... $((i * 5))s · (kein Installer-Log via Agent erreichbar)"
     fi
   done
   if [[ -z "$WEB_OK" ]]; then
-    msg_info "Noch nicht erreichbar (Build dauert an) – Status prüfen mit:"
+    msg_info "Noch nicht erreichbar – Status prüfen mit:"
     msg_info "  ssh ${SSH_USER}@${VM_IP}   (Passwort: ${SSH_PASSWORD})"
-    msg_info "  tail -f /var/log/local-news-install.log && docker compose -f /opt/local-news/docker-compose.yml ps"
+    msg_info "  tail -f /var/log/local-news-install.log"
+    msg_info "  sudo docker compose -f /opt/local-news/docker-compose.yml ps"
     msg_info "Der systemd-Service 'local-news-install' wiederholt die Installation automatisch bei Bedarf."
   fi
 fi
