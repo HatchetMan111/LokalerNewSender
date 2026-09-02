@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Local Newsroom</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">LOCAL NEWS</div>
+    <nav>
+      <a href="#" class="active" data-view="dashboard">Dashboard</a>
+      <a href="#" data-view="articles">Nachrichten</a>
+      <a href="#" data-view="episodes">Sendungen</a>
+      <a href="#" data-view="settings" onclick="alert('Einstellungen: siehe .env (LLM/TTS-Provider, Quellen in der DB)');return false;">Einstellungen</a>
+    </nav>
+    <div class="sidebar-footer">MVP v0.1</div>
+  </aside>
+
+  <main class="main">
+    <!-- DASHBOARD -->
+    <section id="view-dashboard">
+      <h1>Heutige Ausgabe</h1>
+      <div class="panel wide">
+        <h2>Sendung erstellen</h2>
+        <div class="form-grid">
+          <label>Stadt
+            <select id="city"></select>
+          </label>
+          <label>Datum
+            <input type="date" id="date">
+          </label>
+          <label>Format
+            <select id="format">
+              <option value="daily_news">Tagesnews</option>
+              <option value="breaking_news">Breaking News</option>
+            </select>
+          </label>
+          <label>Länge
+            <select id="duration">
+              <option value="600">10 Minuten</option>
+              <option value="300">5 Minuten</option>
+              <option value="900">15 Minuten</option>
+            </select>
+          </label>
+        </div>
+        <button id="btn-generate" class="btn primary">SENDUNG GENERIEREN</button>
+      </div>
+
+      <div class="panel wide" id="status-panel" hidden>
+        <h2 id="status-title">Status</h2>
+        <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+        <ul id="step-list" class="steps"></ul>
+        <div id="status-error" class="error" hidden></div>
+        <div class="actions">
+          <a id="btn-video" class="btn" target="_blank" hidden>VIDEO ANSEHEN</a>
+          <a id="btn-audio" class="btn" target="_blank" hidden>AUDIO ANHÖREN</a>
+          <button id="btn-approve" class="btn primary" hidden>FREIGEBEN</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- NACHRICHTEN -->
+    <section id="view-articles" hidden>
+      <h1>Nachrichten</h1>
+      <div class="panel wide">
+        <div class="toolbar">
+          <button id="btn-import" class="btn">NEWS JETZT LADEN</button>
+          <span id="articles-meta" class="muted"></span>
+        </div>
+        <table class="table" id="articles-table">
+          <thead>
+            <tr><th>Prio</th><th>Titel</th><th>Kategorie</th><th>Status</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SENDUNGEN -->
+    <section id="view-episodes" hidden>
+      <h1>Sendungen</h1>
+      <div class="panel wide">
+        <table class="table" id="episodes-table">
+          <thead>
+            <tr><th>ID</th><th>Stadt</th><th>Datum</th><th>Format</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
