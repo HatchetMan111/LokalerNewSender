@@ -51,6 +51,9 @@ class MockLLM(LLMProvider):
 class OpenAILLM(LLMProvider):
     name = "openai"
 
+    def __init__(self, model: str | None = None):
+        self.model = model or settings.openai_model
+
     def generate(self, prompt: str, system: str = "") -> str:
         if not settings.openai_api_key:
             log.warning("OPENAI_API_KEY leer – falle auf Mock-Provider zurück")
@@ -59,7 +62,7 @@ class OpenAILLM(LLMProvider):
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             json={
-                "model": settings.openai_model,
+                "model": self.model,
                 "messages": [
                     {"role": "system", "content": system or "Du bist ein Redakteur für lokale Nachrichten."},
                     {"role": "user", "content": prompt},
@@ -72,9 +75,16 @@ class OpenAILLM(LLMProvider):
         return resp.json()["choices"][0]["message"]["content"]
 
 
-def get_llm() -> LLMProvider:
-    if settings.llm_provider == "openai":
-        return OpenAILLM()
+def get_llm(db=None) -> LLMProvider:
+    """db -> Provider/Modell aus der settings-Tabelle (UI), sonst .env."""
+    provider = settings.llm_provider
+    model = settings.openai_model
+    if db is not None:
+        from app.services import settings_svc
+        provider = settings_svc.llm_provider(db)
+        model = settings_svc.openai_model(db)
+    if provider == "openai":
+        return OpenAILLM(model)
     return MockLLM()
 
 

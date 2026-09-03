@@ -86,7 +86,7 @@ def import_from_sources(db, city: City) -> int:
 
 def analyze_articles(db, city: City, limit: int = 40) -> int:
     """Analysiert rohe Artikel: Lokalität, Wichtigkeit, Zusammenfassung."""
-    llm = get_llm()
+    llm = get_llm(db)
     articles = (
         db.query(Article)
         .filter(Article.city_id == city.id, Article.status == "raw")

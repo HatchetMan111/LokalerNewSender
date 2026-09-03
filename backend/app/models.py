@@ -124,6 +124,19 @@ class EpisodeItem(Base):
     article: Mapped["Article | None"] = relationship(lazy="joined")
 
 
+class Setting(Base):
+    """Runtime-Einstellungen, änderbar über die UI (Key-Value)."""
+    __tablename__ = "settings"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(40), default="general")
+    label: Mapped[str | None] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(String(500))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class AIJob(Base):
     __tablename__ = "ai_jobs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

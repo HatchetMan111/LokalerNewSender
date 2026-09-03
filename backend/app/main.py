@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import articles, cities, episodes, pipeline
+from app.api import articles, episodes, pipeline, settings as settings_api
 from app.services.storage import ensure_dirs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -17,7 +17,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(cities.router)
+app.include_router(settings_api.router)
+app.include_router(settings_api.router_sources)
+app.include_router(settings_api.router_cities)
 app.include_router(articles.router)
 app.include_router(episodes.router)
 app.include_router(pipeline.router)

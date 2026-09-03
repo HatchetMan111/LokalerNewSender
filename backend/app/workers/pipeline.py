@@ -73,6 +73,8 @@ def task_run_pipeline(episode_id: int) -> dict:
         if not episode:
             raise RuntimeError(f"Episode {episode_id} nicht gefunden")
         city = db.get(City, episode.city_id)
+        from app.services import settings_svc
+        episode.voice_id = episode.voice_id or settings_svc.tts_voice(db)
         slug = slugify(f"{city.name}-{episode.date}" if city else f"episode-{episode.id}")
 
         try:
@@ -112,7 +114,7 @@ def task_run_pipeline(episode_id: int) -> dict:
 
             # ---------- 3. SCRIPT ----------
             _set_status(db, episode, "scripting")
-            llm = get_llm()
+            llm = get_llm(db)
             for item in items:
                 if item.seg_type == "intro":
                     item.script = (
@@ -168,10 +170,10 @@ def task_run_pipeline(episode_id: int) -> dict:
 
             # ---------- 4. VOICE (TTS) ----------
             _set_status(db, episode, "voice_generating")
-            tts = get_tts()
+            tts = get_tts(db)
             for item in items:
                 vp = voice_path(episode.id, item.id)
-                tts.synthesize(item.script, vp)
+                tts.synthesize(item.script, vp, voice=episode.voice_id)
                 item.voice_file = vp
                 item.status = "voice_ready"
                 db.commit()

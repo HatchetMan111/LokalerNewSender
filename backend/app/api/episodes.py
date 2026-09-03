@@ -37,7 +37,6 @@ def create_episode(payload: EpisodeCreate, db: Session = Depends(get_db)):
         format=payload.format,
         target_duration=payload.duration,
         status="draft",
-        voice_id="default",
     )
     db.add(episode)
     db.commit()

@@ -99,9 +99,30 @@ http://<VM-IP>/api/docs → FastAPI (Swagger)
 3. Status-Checkliste live auf dem Dashboard
 4. `VIDEO ANSEHEN` / `AUDIO ANHÖREN` / `FREIGEBEN`
 
+## Einstellungen über die Oberfläche
+
+Seit v0.2 müssen LLM-Provider, OpenAI-Modell, **Sprecher-Stimme** (8 deutsche
+edge-tts-Stimmen), RSS-Import-Intervall und Standard-Sendungslänge **nicht
+mehr in .env oder DB geändert** werden – alles im Reiter *Einstellungen*:
+
+- **KI / Texterstellung**: Mock ↔ OpenAI, Modell
+- **Sprecher & Audio**: Stimme (Vorschau beim Generieren), Provider
+- **Automatik**: RSS-Import-Intervall
+- **Sendung**: Standardlänge
+- **Quellen** (eigener Reiter): RSS-Quellen hinzufügen/deaktivieren/löschen
+- **Städte**: weitere Städte anlegen/entfernen
+
+Änderungen greifen sofort (Worker lesen Werte pro Job aus der
+`settings`-Tabelle). `.env` bleibt nur noch für Secrets (API-Keys,
+DB-Passwort) zuständig.
+
 ## API
 
 ```
+GET  /api/settings                        Einstellungen (key/value)
+PATCH /api/settings/{key}                 Einstellung ändern
+GET|POST /api/sources                     Quellen verwalten
+PATCH|DELETE /api/sources/{id}
 GET  /api/cities                          Städte
 GET  /api/articles?city_id=1              Artikel (nach Prio)
 POST /api/episodes                        Sendung anlegen (idempotent pro Tag/Format)
