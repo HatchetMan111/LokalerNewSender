@@ -28,6 +28,8 @@ class City(Base):
     radius_km: Mapped[int] = mapped_column(Integer, default=25)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    episodes: Mapped[list["Episode"]] = relationship(back_populates="city")
+
 
 class Source(Base):
     __tablename__ = "sources"
@@ -48,7 +50,7 @@ class Article(Base):
     original_text: Mapped[str | None] = mapped_column(Text)
     url: Mapped[str | None] = mapped_column(String(700))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    event_date: Mapped[str | None] = mapped_column(Date)
+    event_date: Mapped[date | None] = mapped_column(Date)
     location: Mapped[str | None] = mapped_column(String(200))
     city_id: Mapped[int | None] = mapped_column(ForeignKey("cities.id"))
     category: Mapped[str | None] = mapped_column(String(60))
@@ -98,7 +100,7 @@ class Episode(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
-    city: Mapped["City | None"] = relationship(lazy="joined")
+    city: Mapped["City | None"] = relationship(back_populates="episodes", lazy="joined")
     items: Mapped[list["EpisodeItem"]] = relationship(
         back_populates="episode", order_by="EpisodeItem.position", cascade="all, delete-orphan"
     )

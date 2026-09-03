@@ -11,6 +11,11 @@ const STEPS = [
 ];
 const DONE_OK = ["selected", "script_ready", "voice_ready", "rendered", "review", "approved", "published"];
 
+const STATUS_DE = {draft: "Entwurf", collecting: "Sammelt News", selected: "Auswahl steht", scripting: "Schreibt Scripts", script_ready: "Script bereit zur Prüfung", voice_generating: "Erzeugt Sprecher", voice_ready: "Sprecher fertig", rendering: "Rendert Video", rendered: "Gerendert", review: "Bereit zur Freigabe", approved: "Freigegeben", published: "Veröffentlicht", failed: "Fehler"};
+const FORMAT_DE = {daily_news: "Tagesnews", breaking_news: "Breaking News"};
+const ARTICLE_STATUS_DE = {raw: "Roh", ai_processed: "KI-geprüft", editor_approved: "Redaktion-OK", published: "Veröffentlicht", rejected_nonlocal: "Nicht lokal"};
+const statusDe = (s) => STATUS_DE[s] || s;
+
 let currentEpisode = null;
 let pollTimer = null;
 let citiesCache = [];
@@ -72,7 +77,9 @@ async function createEpisode() {
   btn.disabled = true; btn.textContent = "PIPELINE GESTARTET …";
   $("status-panel").hidden = false;
   $("status-error").hidden = true;
-  ["btn-video", "btn-audio", "btn-approve"].forEach((id) => ($(id).hidden = true));
+  ["btn-video", "btn-audio", "btn-approve", "btn-continue"].forEach((id) => ($(id).hidden = true));
+  $("items-panel").hidden = true;
+  $("items-list").innerHTML = "";
   try {
     const payload = {
       city_id: parseInt($("city").value, 10),
@@ -101,18 +108,35 @@ function pollStatus() {
     try {
       const ep = await api(`/api/episodes/${currentEpisode}`);
       updateStatusView(ep.status, ep.error);
-      if (["review", "approved", "published", "failed"].includes(ep.status)) {
+      if (ep.status === "script_ready") {
+        clearInterval(pollTimer);
+        $("status-title").textContent = `Ausgabe #${ep.id} – Scripts prüfen`;
+        $("btn-continue").hidden = false;
+        await loadItems();
+        toast("Scripts fertig – bitte prüfen, dann weiter", "ok");
+      } else if (["review", "approved", "published", "failed"].includes(ep.status)) {
         clearInterval(pollTimer);
         if (["review", "approved", "published"].includes(ep.status)) {
           const links = await api(`/api/episodes/${currentEpisode}/download`);
           $("btn-video").href = links.video; $("btn-video").hidden = false;
           $("btn-audio").href = links.audio; $("btn-audio").hidden = false;
           $("btn-approve").hidden = ep.status !== "review";
+          $("btn-continue").hidden = true;
           toast("Sendung ist fertig!", "ok");
         }
       }
     } catch (err) { clearInterval(pollTimer); showError(err.message); }
   }, 3000);
+}
+
+async function continueEpisode() {
+  $("btn-continue").hidden = true;
+  $("status-title").textContent = `Ausgabe #${currentEpisode} – Produktion läuft`;
+  try {
+    await api(`/api/episodes/${currentEpisode}/continue`, { method: "POST" });
+    toast("Sprecher & Video werden erzeugt", "ok");
+    pollStatus();
+  } catch (err) { showError(err.message); toast(err.message, "err"); }
 }
 
 function updateStatusView(status, error) {
@@ -151,6 +175,39 @@ async function approveEpisode() {
   } catch (err) { showError(err.message); }
 }
 
+// ------------------------------ Sendeplan-Editor -----------------------------
+const SEG_DE = {intro: "Intro", news: "News", weather: "Wetter", outro: "Outro"};
+
+async function loadItems() {
+  if (!currentEpisode) return;
+  const items = await api(`/api/episodes/${currentEpisode}/items`);
+  if (!items.length) return;
+  $("items-panel").hidden = false;
+  $("items-list").innerHTML = items.map((it) => `
+    <div class="item-card" data-item="${it.id}">
+      <div class="item-head">
+        <span class="seg-badge">${SEG_DE[it.seg_type] || it.seg_type}</span>
+        <span class="muted">#${it.position + 1} · ${it.duration || "?"}s · ${statusDe(it.status)}</span>
+      </div>
+      <input type="text" class="item-headline" value="${esc(it.headline || "")}" placeholder="Headline">
+      <textarea class="item-script" rows="3" placeholder="Sprechertext">${esc(it.script || "")}</textarea>
+      <button class="btn small" onclick="saveItem(${it.id})">TEXT SPEICHERN</button>
+    </div>`).join("");
+}
+
+async function saveItem(itemId) {
+  const card = document.querySelector(`[data-item="${itemId}"]`);
+  if (!card) return;
+  const headline = card.querySelector(".item-headline").value;
+  const script = card.querySelector(".item-script").value;
+  try {
+    await api(`/api/episodes/${currentEpisode}/items/${itemId}`, {
+      method: "PATCH", body: JSON.stringify({ headline, script }),
+    });
+    toast("Segment gespeichert", "ok");
+  } catch (err) { toast(err.message, "err"); }
+}
+
 // ------------------------------ Nachrichten --------------------------------
 async function loadArticles() {
   const cityId = $("city").value;
@@ -161,7 +218,7 @@ async function loadArticles() {
       <td class="prio">${a.importance_score}</td>
       <td>${esc(a.title)}</td>
       <td>${esc(a.category || "–")}</td>
-      <td><span class="badge ${a.status === "ai_processed" ? "ok" : ""}">${a.status}</span></td>
+      <td><span class="badge ${a.status === "ai_processed" ? "ok" : ""}">${ARTICLE_STATUS_DE[a.status] || a.status}</span></td>
     </tr>`).join("") || `<tr><td colspan="4" class="muted">Noch keine Nachrichten – „News jetzt laden" klicken.</td></tr>`;
 }
 
@@ -182,8 +239,8 @@ async function loadEpisodes() {
   const cityName = (id) => (citiesCache.find((c) => c.id === id) || {}).name || "–";
   const cls = (s) => ["review", "approved", "published"].includes(s) ? "ok" : s === "failed" ? "err" : "active";
   $("episodes-table").querySelector("tbody").innerHTML = episodes.map((e) => `<tr>
-      <td>${e.id}</td><td>${esc(cityName(e.city_id))}</td><td>${e.date}</td><td>${e.format}</td>
-      <td><span class="badge ${cls(e.status)}">${e.status}</span></td>
+      <td>${e.id}</td><td>${esc(cityName(e.city_id))}</td><td>${e.date}</td><td>${FORMAT_DE[e.format] || e.format}</td>
+      <td><span class="badge ${cls(e.status)}">${statusDe(e.status)}</span></td>
       <td><button class="btn small" onclick="openEpisode(${e.id})">ÖFFNEN</button></td>
     </tr>`).join("") || `<tr><td colspan="6" class="muted">Noch keine Sendungen.</td></tr>`;
 }
@@ -191,6 +248,9 @@ async function loadEpisodes() {
 function openEpisode(id) {
   currentEpisode = id;
   $("status-panel").hidden = false;
+  $("items-panel").hidden = true;
+  $("items-list").innerHTML = "";
+  ["btn-video", "btn-audio", "btn-approve", "btn-continue"].forEach((x) => ($(x).hidden = true));
   $("status-title").textContent = `Ausgabe #${id}`;
   pollStatus();
   document.querySelector('[data-view="dashboard"]').click();
@@ -317,9 +377,20 @@ function updateDynamicOptions() {
     const provider = llmSel.value;
     const meta = REGISTRY.llm[provider] || { models: [] };
     const current = modelSel.value || "";
-    modelSel.innerHTML =
-      `<option value="">Anbieter-Standard${provider !== "custom" && meta.models[0] ? ` (${meta.models[0]})` : ""}</option>` +
-      meta.models.map((m) => `<option value="${m}" ${m === current ? "selected" : ""}>${m}</option>`).join("");
+    if (!meta.models.length) {
+      // Custom-Anbieter: Modellname frei eintippen (z.B. eigenes LocalAI-Modell)
+      const input = document.createElement("input");
+      input.type = "text";
+      input.setAttribute("data-setting", "llm_model");
+      input.placeholder = "Modellname, z.B. mein-modell";
+      input.value = current;
+      modelSel.replaceWith(input);
+    } else {
+      const opts = meta.models.includes(current) || !current ? "" : `<option value="${esc(current)}" selected>${esc(current)} (aktuell)</option>`;
+      modelSel.innerHTML =
+        `<option value="">Anbieter-Standard${meta.models[0] ? ` (${meta.models[0]})` : ""}</option>` +
+        meta.models.map((m) => `<option value="${m}" ${m === current ? "selected" : ""}>${m}</option>`).join("") + opts;
+    }
   }
   const ttsSel = document.querySelector('[data-setting="tts_provider"]');
   const voiceSel = document.querySelector('[data-setting="tts_voice"]');
@@ -327,7 +398,8 @@ function updateDynamicOptions() {
     const provider = ttsSel.value;
     const meta = REGISTRY.tts[provider] || { voices: [] };
     const current = voiceSel.value || "";
-    voiceSel.innerHTML = meta.voices.map((v) => `<option value="${v}" ${v === current ? "selected" : ""}>${v}</option>`).join("");
+    const extra = (!current || meta.voices.includes(current)) ? "" : `<option value="${esc(current)}" selected>${esc(current)} (aktuell)</option>`;
+    voiceSel.innerHTML = meta.voices.map((v) => `<option value="${v}" ${v === current ? "selected" : ""}>${v}</option>`).join("") + extra;
   }
 }
 
@@ -391,6 +463,7 @@ async function renderCityList() {
 // ------------------------------ Init ---------------------------------------
 $("btn-generate").addEventListener("click", createEpisode);
 $("btn-approve").addEventListener("click", approveEpisode);
+$("btn-continue").addEventListener("click", continueEpisode);
 $("btn-import").addEventListener("click", importNews);
 $("btn-src-add").addEventListener("click", addSource);
 $("btn-city-add").addEventListener("click", addCity);

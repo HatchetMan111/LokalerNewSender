@@ -84,7 +84,11 @@ def update_item(episode_id: int, item_id: int, payload: ScriptUpdate,
 
 @router.post("/{episode_id}/generate")
 def generate_episode(episode_id: int, db: Session = Depends(get_db)):
-    """Löst die komplette Pipeline aus (Worker verarbeitet alle Schritte)."""
+    """Startet Import + Auswahl + Scripts und PAUSIERT bei script_ready.
+
+    Der Redakteur prüft/ändert Sprechertexte in der UI (Sendeplan-Editor),
+    danach geht es mit POST /continue (Sprecher -> Video -> Audio) weiter.
+    """
     episode = db.get(Episode, episode_id)
     if not episode:
         raise HTTPException(404, "Sendung nicht gefunden")
@@ -93,8 +97,20 @@ def generate_episode(episode_id: int, db: Session = Depends(get_db)):
     episode.status = "draft"
     episode.error = None
     db.commit()
-    task_run_pipeline.delay(episode_id)
-    return {"episode_id": episode_id, "queued": True}
+    task_run_pipeline.delay(episode_id, upto="script")
+    return {"episode_id": episode_id, "queued": True, "upto": "script"}
+
+
+@router.post("/{episode_id}/continue")
+def continue_episode(episode_id: int, db: Session = Depends(get_db)):
+    """Setzt nach der Redaktions-Prüfung fort: Sprecher -> Video -> Audio."""
+    episode = db.get(Episode, episode_id)
+    if not episode:
+        raise HTTPException(404, "Sendung nicht gefunden")
+    if episode.status not in ("script_ready", "selected"):
+        raise HTTPException(409, f"Fortsetzen erst nach Script-Phase möglich (Status: {episode.status})")
+    task_run_pipeline.delay(episode_id, start_from="voice", upto="review")
+    return {"episode_id": episode_id, "queued": True, "from": "voice"}
 
 
 @router.post("/{episode_id}/approve")

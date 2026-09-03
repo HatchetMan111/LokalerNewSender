@@ -17,12 +17,11 @@ import json
 import logging
 import os
 import subprocess
-import urllib.request
 
 import httpx
 
 from app.config import settings
-from app.services.storage import export_paths
+from app.services.storage import export_paths, slugify
 
 log = logging.getLogger(__name__)
 
@@ -162,8 +161,9 @@ def render_episode(episode, items, *, backend: str = "ffmpeg", style: str | None
     """Rendert die Sendung. Rückgabe: Pfade + Production JSON (als Dict)."""
     style = style or settings.video_style
     resolution = resolution or settings.video_resolution
-    slug = f"{episode.city.name.lower().replace(' ', '-').replace('ä', 'ae').replace('ö', 'oe').replace('ü', 'ue')}-{episode.date}" \
-        if episode.city else f"episode-{episode.id}"
+    # WICHTIG: derselbe Slug wie im Download-Endpunkt (/api/episodes/{id}/download),
+    # sonst führen VIDEO/AUDIO-Links ins Leere (404).
+    slug = slugify(f"{episode.city.name}-{episode.date}" if episode.city else f"episode-{episode.id}")
     paths = export_paths(slug)
 
     production = {

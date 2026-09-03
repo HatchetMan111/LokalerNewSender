@@ -95,7 +95,13 @@ http://<VM-IP>/api/docs → FastAPI (Swagger)
 
 1. **Sendung erstellen** – Stadt, Datum, Format, Länge wählen → `SENDUNG GENERIEREN`
 2. Pipeline läuft automatisch:
-   `Import → Analyse (Prio) → Auswahl → Script → Voice (TTS) → Video (FFmpeg) → Audio → Review`
+   `Import → Analyse → Auswahl → Script → ⏸ REDAKTIONS-PRÜFUNG → Voice → Video → Audio → Review`
+
+**Redaktions-Prüfung:** Die Pipeline pausiert automatisch nach den Scripts
+(Status `script_ready`). In der Oberfläche erscheint der Sendeplan-Editor:
+alle Sprechertexte lesen, ändern, speichern – erst dann geht es per
+„Sprecher & Video erzeugen" weiter (`POST /api/episodes/{id}/continue`).
+So gilt immer: KI schlägt vor, Mensch gibt frei.
 3. Status-Checkliste live auf dem Dashboard
 4. `VIDEO ANSEHEN` / `AUDIO ANHÖREN` / `FREIGEBEN`
 

@@ -8,12 +8,10 @@ celery_app = Celery(
     backend=settings.redis_url,
 )
 
-celery_app.conf.beat_schedule = {
-    "import-news": {
-        "task": "app.workers.pipeline.task_import_news",
-        "schedule": settings.import_interval_minutes * 60,
-    },
-}
 celery_app.conf.timezone = "Europe/Berlin"
+
+# Hinweis: Der periodische Import läuft NICHT über Celery Beat, sondern über
+# app.workers.scheduler (eigener Loop), damit das Intervall live aus der
+# settings-Tabelle gelesen wird (UI-Einstellung ohne Neustart wirksam).
 
 import app.workers.pipeline  # noqa: E402,F401  (Tasks registrieren)

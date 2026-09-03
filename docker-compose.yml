@@ -15,6 +15,8 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-localnews}"]
       interval: 5s
+      timeout: 5s
+      start_period: 30s
       retries: 20
 
   redis:
@@ -30,6 +32,7 @@ services:
 
   backend:
     build: ./backend
+    image: local-news-backend:latest
     restart: unless-stopped
     env_file: .env
     environment:
@@ -46,6 +49,7 @@ services:
 
   worker:
     build: ./backend
+    image: local-news-backend:latest
     restart: unless-stopped
     env_file: .env
     environment:
@@ -62,6 +66,7 @@ services:
 
   scheduler:
     build: ./backend
+    image: local-news-backend:latest
     restart: unless-stopped
     env_file: .env
     environment:
@@ -72,7 +77,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    command: celery -A app.workers.celery_app beat --loglevel=info
+    command: python -m app.workers.scheduler
 
   frontend:
     image: nginx:alpine

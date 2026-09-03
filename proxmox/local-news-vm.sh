@@ -74,7 +74,8 @@ function msg_ok()    { echo -e "${GN}[  OK  ]${CL} $1"; }
 function msg_error() { echo -e "${RD}[ FEHL ]${CL} $1"; exit 1; }
 
 IMG_FILE="/tmp/local-news-debian-cloud-amd64.qcow2"
-trap 'rm -f "$IMG_FILE"' EXIT
+# Kein EXIT-Trap: das Image bleibt für Wiederholungen gecacht (430 MB sparen).
+# Abgebrochene/teils geladene Dateien erkennt der Größen-Check unten.
 
 header_info
 
@@ -145,12 +146,20 @@ if [[ "$INTERACTIVE" == "yes" ]] || { [[ "$INTERACTIVE" == "auto" ]] && [[ -t 0 
   header_info
 fi
 
+# VMID könnte im Dialog geändert worden sein -> erneut auf Kollision prüfen
+if qm status "$VMID" &>/dev/null; then
+  msg_error "VMID $VMID existiert bereits (ggf. im Dialog geändert). Andere VMID wählen oder: qm destroy $VMID --purge"
+fi
+
 # ------------------------- Statische IP (wird nach VM-Create gesetzt) ------
 if [[ -n "$STATIC_IP" ]]; then
   if ! [[ "$STATIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     msg_error "STATIC_IP sieht nicht wie eine IPv4 aus: '$STATIC_IP'"
   fi
   [[ -z "$GATEWAY" ]] && GATEWAY=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
+  if [[ -z "$GATEWAY" ]]; then
+    msg_error "Kein Default-Gateway auf dem Host gefunden – Gateway per GATEWAY=192.168.x.1 übergeben."
+  fi
   PREFIX=$(ip -4 -o addr show dev "$BRIDGE" 2>/dev/null | awk '{split($4,a,"/"); print a[2]}' | head -1)
   [[ -z "$PREFIX" ]] && PREFIX=24
   VM_IP="$STATIC_IP"
@@ -341,7 +350,22 @@ msg_ok "VM ${VMID} erstellt"
 # ------------------------- Cloud-Init User-Data ----------------------------
 # In-VM-Installer wird per write_files in die VM geschrieben und via
 # cloud-init runcmd beim ersten Boot ausgeführt.
-SNIPPET_DIR="/var/lib/vz/snippets"
+# Snippet-Verzeichnis aus dem STORAGE auflösen (nicht hartkodiert!) und
+# sicherstellen, dass snippets-Inhalt erlaubt ist.
+if ! pvesm status 2>/dev/null | awk -v s="$SNIPPET_STORAGE" '$1==s' | grep -q .; then
+  msg_error "Snippet-Storage '$SNIPPET_STORAGE' existiert nicht."
+fi
+if ! pvesh get "/storage/${SNIPPET_STORAGE}" --output-format json 2>/dev/null | grep -q '"snippets"'; then
+  msg_info "Aktiviere snippets-Inhalt auf Storage '$SNIPPET_STORAGE' ..."
+  if ! pvesm set "$SNIPPET_STORAGE" --content "$(pvesh get "/storage/${SNIPPET_STORAGE}" --output-format json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(','.join(sorted(set((d.get('content') or '').split(',')) | {'snippets'})))" 2>/dev/null)"; then
+    msg_error "Konnte snippets-Inhalt auf '$SNIPPET_STORAGE' nicht aktivieren. Bitte manuell: pvesm set $SNIPPET_STORAGE --content <...,snippets>"
+  fi
+fi
+SNIPPET_FILE="local-news-user-${VMID}.yaml"
+SNIPPET_DIR=$(dirname "$(pvesm path "${SNIPPET_STORAGE}:snippets/${SNIPPET_FILE}" 2>/dev/null)" 2>/dev/null)
+if [[ -z "$SNIPPET_DIR" || "$SNIPPET_DIR" == "." ]]; then
+  SNIPPET_DIR="/var/lib/vz/snippets"  # Fallback für Standard-'local'
+fi
 mkdir -p "$SNIPPET_DIR"
 
 cat > "/tmp/local-news-install-${VMID}.sh" <<INSTALLER_EOF
@@ -362,7 +386,9 @@ function log() { echo "[\$(date '+%H:%M:%S')] \$*"; }
 
 # Wird auch bei jedem Boot erneut gestartet, bis der Stack läuft –
 # so erholt sich die Installation selbst von Netz-/Build-Fehlern.
-STACK_UP() { docker compose -f /opt/local-news/docker-compose.yml ps 2>/dev/null | grep -q "backend"; }
+# ECHTER Gesundheitscheck: Container "Up" UND /api/health antwortet.
+STACK_UP() { docker compose -f /opt/local-news/docker-compose.yml ps 2>/dev/null | grep -Eq "backend.*Up" && \
+  curl -s -m 3 http://localhost/api/health 2>/dev/null | grep -q '"ok"'; }
 
 if STACK_UP; then
   log "[ OK ] Stack läuft bereits – nichts zu tun."
@@ -392,7 +418,7 @@ if [ ! -f /opt/local-news/docker-compose.yml ]; then
     mkdir -p /opt/local-news
     tar xzf /opt/local-news-repo.tar.gz -C /opt/local-news --strip-components=1
   else
-    log "[INFO] Klone \$REPO_URL ..."
+    log "[INFO] Klone Repository (Branch: \$REPO_BRANCH) ..."
     if ! git clone -b "\$REPO_BRANCH" "\$REPO_URL" /opt/local-news; then
       log "[WARN] git clone fehlgeschlagen – Fallback: Tarball-Download"
       REPO_PATH=\$(echo "\$REPO_URL" | sed 's|\.git\$||; s|https://[^@]*@github.com/||; s|https://github.com/||')
@@ -421,9 +447,13 @@ if [ ! -f .env ]; then
       echo "HTTP_PORT=80"
       echo "LLM_PROVIDER=mock"
       echo "OPENAI_API_KEY="
+      echo "OPENAI_MODEL=gpt-4o-mini"
       echo "OPENROUTER_API_KEY="
+      echo "OPENROUTER_MODEL=openai/gpt-4o-mini"
       echo "ANTHROPIC_API_KEY="
+      echo "ANTHROPIC_MODEL=claude-3-5-haiku-latest"
       echo "OLLAMA_BASE_URL="
+      echo "OLLAMA_MODEL=llama3.1"
       echo "LLM_BASE_URL="
       echo "LLM_MODEL="
       echo "LLM_API_KEY="
@@ -431,6 +461,8 @@ if [ ! -f .env ]; then
       echo "TTS_VOICE=de-DE-KatjaNeural"
       echo "TTS_MODEL=tts-1"
       echo "TTS_BASE_URL="
+      echo "VIDEO_RESOLUTION=1920x1080"
+      echo "VIDEO_FPS=25"
       echo "VIDEO_STYLE=news-dark"
       echo "RENDERER_BACKEND=ffmpeg"
       echo "RENDERER_WEBHOOK_URL="
@@ -438,31 +470,39 @@ if [ ! -f .env ]; then
       echo "TZ=Europe/Berlin"
     } > .env
   fi
-  sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=\$POSTGRES_PASSWORD/" .env
+  # Passwort sed-sicher escapen (Sonderzeichen wie / oder & würden sed brechen)
+  ESC_PW=$(printf '%s' "\$POSTGRES_PASSWORD" | sed 's/[&|]/\\&/g')
+  sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=\${ESC_PW}|" .env
 fi
 
-# ---- Stack starten (mit Wiederholungen) ----
+# ---- Stack starten (mit Wiederholungen; Build nur beim ersten Mal) ----
+# --build bei JEDEM Versuch würde auf schwachen Hosts je ~20 Min. verbrennen.
+BUILD_MARKER="/opt/.local-news-image-built"
+BUILD_FLAG=""
+if [ ! -f "\$BUILD_MARKER" ]; then
+  BUILD_FLAG="--build"
+fi
 ATTEMPT=0
 until [ \$ATTEMPT -ge 3 ]; do
   ATTEMPT=\$((ATTEMPT+1))
-  log "[INFO] Docker Compose Build/Start – Versuch \$ATTEMPT von 3 (dauert beim ersten Mal einige Minuten) ..."
-  if docker compose up -d --build; then
+  log "[INFO] Docker Compose Start – Versuch \$ATTEMPT von 3 (erster Build dauert einige Minuten) ..."
+  if docker compose up -d \$BUILD_FLAG && touch "\$BUILD_MARKER"; then
     break
   fi
   log "[WARN] Versuch \$ATTEMPT fehlgeschlagen – warte 60 s und versuche erneut ..."
   sleep 60
 done
 
-# ---- Status + interner Gesundheitstest ----
+# ---- Status + interner Gesundheitstest (3 Min., schwache Hosts brauchen das) ----
 sleep 15
 docker compose ps
-for i in \$(seq 1 12); do
+for i in \$(seq 1 18); do
   if curl -s -m 3 http://localhost/api/health | grep -q ok; then
     IP=\$(hostname -I | awk '{print \$1}')
     log "[ OK ] Local News Platform läuft: http://\${IP}"
     exit 0
   fi
-  log "[INFO] Warte auf Backend ... (\$i/12)"
+  log "[INFO] Warte auf Backend ... (\$i/18)"
   sleep 10
 done
 log "[WARN] Backend antwortet noch nicht – Details: docker compose logs"
@@ -514,11 +554,8 @@ runcmd:
   - [systemctl, enable, --now, local-news-install.service]
 YAML_EOF
 
-cp "/tmp/local-news-user-${VMID}.yaml" "${SNIPPET_DIR}/local-news-user-${VMID}.yaml"
-qm set "$VMID" --cicustom "user=${SNIPPET_STORAGE}:snippets/local-news-user-${VMID}.yaml"
-
-cp "/tmp/local-news-user-${VMID}.yaml" "${SNIPPET_DIR}/local-news-user-${VMID}.yaml"
-qm set "$VMID" --cicustom "user=${SNIPPET_STORAGE}:snippets/local-news-user-${VMID}.yaml"
+cp "/tmp/local-news-user-${VMID}.yaml" "${SNIPPET_DIR}/${SNIPPET_FILE}"
+qm set "$VMID" --cicustom "user=${SNIPPET_STORAGE}:snippets/${SNIPPET_FILE}"
 
 msg_ok "Cloud-Init konfiguriert (Installer wird beim ersten Boot ausgeführt)"
 
@@ -549,7 +586,7 @@ try:
     for iface in json.load(sys.stdin):
         for addr in iface.get('ip-addresses', []):
             ip = addr.get('ip-address', '')
-            if addr.get('ip-address-type') == 'ipv4' and not ip.startswith('127.'):
+            if addr.get('ip-address-type') == 'ipv4' and not ip.startswith(('127.', '169.254.')):
                 print(ip)
 except Exception:
     pass
@@ -649,7 +686,7 @@ function push_repo_to_vm {
 
 function get_install_progress {
   # Letzte Zeile des Installer-Logs via Guest-Agent (falls der läuft)
-  qm guest exec "$VMID" -- tail -n 1 /var/log/local-news-install.log 2>/dev/null \
+  qm guest exec "$VMID" tail -n 1 /var/log/local-news-install.log 2>/dev/null \
     | python3 -c "
 import json, sys
 try:
@@ -667,7 +704,7 @@ except Exception:
 if [[ "$START_VM" == "yes" ]]; then
   if push_repo_to_vm; then
     msg_ok "Repo-Tarball in VM übertragen (/opt/local-news-repo.tar.gz)"
-    qm guest exec "$VMID" -- systemctl restart local-news-install >/dev/null 2>&1 \
+    qm guest exec "$VMID" systemctl restart local-news-install >/dev/null 2>&1 \
       && msg_ok "Installer in VM (neu) gestartet"
   fi
 fi
@@ -689,7 +726,7 @@ if [[ "$START_VM" == "yes" && -n "$VM_IP" ]]; then
       if push_repo_to_vm; then
         PUSHED="yes"
         msg_ok "Repo-Tarball nachträglich in VM übertragen – Installer startet"
-        qm guest exec "$VMID" -- systemctl restart local-news-install >/dev/null 2>&1 || true
+        qm guest exec "$VMID" systemctl restart local-news-install >/dev/null 2>&1 || true
       fi
     fi
     if read -t 5 -n 1 -s key 2>/dev/null; then
@@ -717,10 +754,16 @@ echo
 echo -e "${BL}=================================================================${CL}"
 echo -e "${GN}  LOCAL NEWS PLATFORM – VM ${VMID}${CL}"
 echo
-if [[ -n "$VM_IP" && "$WEB_OK" == "yes" ]]; then
+if [[ "$START_VM" != "yes" ]]; then
+  echo -e "  ${YW}○ VM erstellt, aber NICHT gestartet (START_VM=no)${CL}"
+  echo -e "  Starten mit: ${GN}qm start ${VMID}${CL}"
+  echo
+elif [[ "$WEB_OK" == "yes" ]]; then
   echo -e "  ${GN}✓ Weboberfläche ist online: http://${IP_SHOW}${CL}"
 elif [[ -n "$VM_IP" ]]; then
   echo -e "  ${YW}○ Weboberfläche noch nicht erreichbar (Build läuft ggf. noch)${CL}"
+else
+  echo -e "  ${YW}○ Keine VM-IP ermittelt${CL}"
 fi
 echo
 echo -e "  ${BL}Zugangsdaten:${CL}"
@@ -732,7 +775,7 @@ echo -e "  Weboberfläche : ${GN}http://${IP_SHOW}${CL}  (LOCAL NEWSROOM Dashboa
 echo -e "  API           : ${GN}http://${IP_SHOW}/api/health${CL}"
 echo -e "  Stack-Ordner  : /opt/local-news (in der VM)"
 echo
-if [[ -n "$VM_IP" && "$WEB_OK" != "yes" ]]; then
+if [[ "$START_VM" == "yes" && -n "$VM_IP" && "$WEB_OK" != "yes" ]]; then
   echo -e "  ${BL}Status prüfen:${CL}"
   echo -e "    ssh ${SSH_USER}@${IP_SHOW}"
   echo -e "    tail -f /var/log/local-news-install.log"

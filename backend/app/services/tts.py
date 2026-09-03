@@ -19,10 +19,31 @@ log = logging.getLogger(__name__)
 
 VALID_VOICE_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
 
+OPENAI_VOICES = ("alloy", "echo", "fable", "onyx", "nova", "shimmer")
+
 
 def _valid_voice(voice: str) -> bool:
-    """edge/openai-Stimmen: nur Buchstaben, Zahlen, Bindestrich."""
-    return bool(voice) and set(voice) <= VALID_VOICE_CHARS and "-" in voice or voice in ("alloy", "echo", "fable", "onyx", "nova", "shimmer", "tts-1", "de")
+    """Nur Buchstaben, Zahlen, Bindestrich."""
+    return bool(voice) and (set(voice) <= VALID_VOICE_CHARS)
+
+
+def edge_voice(voice: str | None) -> str:
+    """Bereinigt Stimmennamen für edge-tts (Format: xx-XX-NameNeural).
+    OpenAI-Namen (alloy, nova, ...) würden edge-tts crashen lassen."""
+    if voice and _valid_voice(voice) and "-" in voice:
+        return voice
+    fallback = settings.tts_voice
+    if fallback and _valid_voice(fallback) and "-" in fallback:
+        return fallback
+    return "de-DE-KatjaNeural"
+
+
+def openai_voice(voice: str | None) -> str:
+    """Bereinigt Stimmennamen für OpenAI-Speech. Edge-Namen (de-DE-...)
+    würden die API mit 400 ablehnen."""
+    if voice in OPENAI_VOICES:
+        return voice
+    return "alloy"
 
 
 class TTSProvider:
@@ -37,9 +58,7 @@ class EdgeTTS(TTSProvider):
         import edge_tts
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        voice = voice if (voice and _valid_voice(voice)) else settings.tts_voice
-        if not _valid_voice(voice):
-            voice = "de-DE-KatjaNeural"
+        voice = edge_voice(voice)
 
         async def _run():
             communicate = edge_tts.Communicate(text, voice)
@@ -59,7 +78,7 @@ class OpenAISpeech(TTSProvider):
         self.api_key = api_key
 
     def synthesize(self, text: str, out_path: str, voice: str | None = None) -> str:
-        voice = voice if (voice and _valid_voice(voice)) else "alloy"
+        voice = openai_voice(voice)
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

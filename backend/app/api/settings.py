@@ -10,8 +10,8 @@ from app.database import get_db
 from app.models import City, Setting, Source
 from app.schemas import CityOut
 from app.services import settings_svc
-from app.services.ai import PROVIDERS as LLM_PROVIDER_CLASSES, get_llm
-from app.services.tts import EdgeTTS, get_tts
+from app.services.ai import get_llm
+from app.services.tts import get_tts
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -217,8 +217,9 @@ def create_city(payload: CityCreate, db: Session = Depends(get_db)):
     return city
 
 
-@router_cities.delete("/{city_id}", status_code=204)
+@router_cities.delete("/{city_id}")
 def delete_city(city_id: int, db: Session = Depends(get_db)):
+    """204 darf keinen Body haben – deshalb 200 mit Ergebnis-Flag."""
     city = db.get(City, city_id)
     if not city:
         raise HTTPException(404, "Stadt nicht gefunden")
@@ -228,3 +229,4 @@ def delete_city(city_id: int, db: Session = Depends(get_db)):
         return {"deactivated": True}
     db.delete(city)
     db.commit()
+    return {"deleted": True}

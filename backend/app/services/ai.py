@@ -117,8 +117,11 @@ class Ollama(OpenAICompatible):
     def __init__(self, model: str | None = None):
         if not settings.ollama_base_url:
             raise RuntimeError("OLLAMA_BASE_URL nicht gesetzt (.env), z.B. http://192.168.178.50:11434")
-        super().__init__(model or settings.ollama_model,
-                         settings.ollama_base_url.rstrip("/").removesuffix("/v1"), "")
+        # Ollamas OpenAI-kompatibler Endpunkt liegt IMMER unter /v1
+        base = settings.ollama_base_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base += "/v1"
+        super().__init__(model or settings.ollama_model, base, "")
 
 
 class CustomLLM(OpenAICompatible):

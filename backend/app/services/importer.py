@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 import feedparser
+import httpx
 
 from app.models import Article, City, Source
 from app.services.ai import get_llm, parse_json_loose
@@ -45,6 +47,11 @@ def looks_local(article: Article, city: City | None) -> bool:
     return city.name.lower() in text
 
 
+def norm_title(title: str) -> str:
+    """Normalisierter Titel für Duplikat-Erkennung."""
+    return re.sub(r"[^a-z0-9äöü]+", "", (title or "").lower())[:60]
+
+
 def import_from_sources(db, city: City) -> int:
     """Importiert Artikel aller aktiven RSS-Quellen. Return: Anzahl neuer Artikel."""
     count = 0
@@ -53,25 +60,44 @@ def import_from_sources(db, city: City) -> int:
         if not source.rss_url:
             continue
         try:
-            feed = feedparser.parse(source.rss_url)
+            # httpx mit Timeout: feedparser.parse(url) könnte sonst ewig hängen
+            resp = httpx.get(
+                source.rss_url, timeout=20, follow_redirects=True,
+                headers={"User-Agent": "LocalNews/0.3 RSS-Importer"},
+            )
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
         except Exception as exc:  # noqa: BLE001
             log.warning("RSS-Fehler bei %s: %s", source.name, exc)
             continue
+        # Titel der letzten Artikel dieser Stadt für Duplikat-Vergleich cachen
+        known_titles = {
+            norm_title(t) for (t,) in
+            db.query(Article.title).filter(Article.city_id == city.id)
+            .order_by(Article.id.desc()).limit(500).all()
+        }
         for entry in feed.entries[:30]:
             link = getattr(entry, "link", None)
             title = getattr(entry, "title", None)
             if not title:
                 continue
-            dup = db.query(Article).filter(Article.url == link).first()
-            if dup:
-                continue
+            title = title[:500]
+            title_norm = norm_title(title)
+            if link:
+                dup = db.query(Article).filter(Article.url == link).first()
+            else:
+                dup = db.query(Article).filter(
+                    Article.city_id == city.id, Article.source_id == source.id,
+                    Article.title == title).first()
+            if dup or title_norm in known_titles:
+                continue  # Duplikat (gleiche URL oder gleicher Titel)
             text = getattr(entry, "summary", "") or ""
             published = None
             if getattr(entry, "published_parsed", None):
                 published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
             article = Article(
                 source_id=source.id,
-                title=title[:500],
+                title=title,
                 original_text=text,
                 url=link,
                 published_at=published,
@@ -79,13 +105,19 @@ def import_from_sources(db, city: City) -> int:
                 status="raw",
             )
             db.add(article)
+            known_titles.add(title_norm)
             count += 1
     db.commit()
     return count
 
 
 def analyze_articles(db, city: City, limit: int = 40) -> int:
-    """Analysiert rohe Artikel: Lokalität, Wichtigkeit, Zusammenfassung."""
+    """Analysiert rohe Artikel: Lokalität, Wichtigkeit, Zusammenfassung.
+
+    Lokalität ist ein SCORE, kein hartes Gate: Artikel ohne Ortsnennung
+    werden nicht verworfen, sondern nur schlechter bewertet (ai_facts.local).
+    So gibt es immer Material – lokale Meldungen stehen automatisch oben.
+    """
     llm = get_llm(db)
     articles = (
         db.query(Article)
@@ -96,10 +128,12 @@ def analyze_articles(db, city: City, limit: int = 40) -> int:
     )
     analyzed = 0
     for article in articles:
-        if not looks_local(article, city):
-            article.status = "rejected_nonlocal"
-            continue
+        local = looks_local(article, city)
         article.importance_score = score_importance(article, city)
+        if not local:
+            # Überregionale Meldung: Abzug statt Ausschluss
+            article.importance_score = max(0, article.importance_score - 25)
+        article.ai_facts = {"local": local}
         if llm.name != "mock":
             try:
                 raw = llm.generate(
