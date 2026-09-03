@@ -101,20 +101,32 @@ http://<VM-IP>/api/docs → FastAPI (Swagger)
 
 ## Einstellungen über die Oberfläche
 
-Seit v0.2 müssen LLM-Provider, OpenAI-Modell, **Sprecher-Stimme** (8 deutsche
-edge-tts-Stimmen), RSS-Import-Intervall und Standard-Sendungslänge **nicht
-mehr in .env oder DB geändert** werden – alles im Reiter *Einstellungen*:
+Seit v0.3 sind **alle Anbieter komplett über die UI wählbar** – inklusive
+Test-Buttons („KI-Anbieter testen" / „Stimme testen & anhören"):
 
-- **KI / Texterstellung**: Mock ↔ OpenAI, Modell
-- **Sprecher & Audio**: Stimme (Vorschau beim Generieren), Provider
-- **Automatik**: RSS-Import-Intervall
-- **Sendung**: Standardlänge
-- **Quellen** (eigener Reiter): RSS-Quellen hinzufügen/deaktivieren/löschen
-- **Städte**: weitere Städte anlegen/entfernen
+**KI-Anbieter (LLM)** – für Scripts & Analyse:
+| Anbieter | Modell-Beispiele | Nötig in .env |
+|---|---|---|
+| Mock | – (Template-Texte) | nichts |
+| OpenAI | gpt-4o-mini, gpt-4o, gpt-4.1, o4-mini | `OPENAI_API_KEY` |
+| OpenRouter | openai/…, anthropic/claude-3.5-…, meta-llama/…, google/gemini-… | `OPENROUTER_API_KEY` |
+| Anthropic | claude-3-5-haiku/sonnet, claude-3-opus | `ANTHROPIC_API_KEY` |
+| Ollama (lokal) | llama3.1, mistral, qwen2.5, gemma2 | `OLLAMA_BASE_URL` |
+| Custom (OpenAI-kompatibel) | LocalAI, vLLM, … | `LLM_BASE_URL` |
 
-Änderungen greifen sofort (Worker lesen Werte pro Job aus der
-`settings`-Tabelle). `.env` bleibt nur noch für Secrets (API-Keys,
-DB-Passwort) zuständig.
+**Sprachmodelle (TTS)**: Edge-TTS (8 deutsche Stimmen, kostenlos) ·
+OpenAI Speech (alloy, echo, nova, …) · LocalAI/eigener Endpunkt.
+
+**Video-Pipeline**: Renderer-Backend (FFmpeg lokal **oder** externer
+Render-Service via Webhook), Stil (`news-dark` / `news-light` / `minimal`),
+Auflösung inkl. **vertikal 9:16** (1080x1920, 720x1280) für
+Shorts/Reels/TikTok.
+
+Dazu: RSS-Quellen verwalten (eigener Reiter), Städte anlegen, Import-Intervall,
+Standard-Sendungslänge. Änderungen greifen sofort (Worker lesen pro Job aus
+der `settings`-Tabelle). `.env` bleibt nur für **Secrets** (API-Keys,
+DB-Passwort) zuständig – fehlt ein Key, fällt das System automatisch auf
+Mock/Edge zurück statt zu crashen.
 
 ## API
 

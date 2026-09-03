@@ -1,10 +1,15 @@
 """Video-/Audio-Renderer.
 
-Der Renderer erhält kein Rohmaterial, sondern das strukturierte Production
-JSON: Segmente mit Sprechaudio, Headline und Lower Third. FFmpeg agiert als
-virtueller Fernsehschnittplatz:
+Backends:
+  ffmpeg   – lokaler FFmpeg-Schnittplatz (Standard): Titelkarten mit
+             Headline + Lower Third je Stil, Voice-Audio, Concat zu MP4/MP3
+  webhook  – externer Render-Service: bekommt das komplette Production
+             JSON via POST und liefert MP4/MP3 zurück (z.B. GPU-Host,
+             Spezial-Renderer, Cloud-Service)
 
-    Segment = Titelkarte (drawtext) + Voice-Audio  ->  concat  ->  MP4/MP3
+Stile (video_style): news-dark | news-light | minimal
+Auflösungen: 16:9 (1920x1080, 1280x720, 4K) und 9:16 vertikal (1080x1920,
+720x1280) für Shorts/Reels/TikTok.
 """
 from __future__ import annotations
 
@@ -12,16 +17,38 @@ import json
 import logging
 import os
 import subprocess
+import urllib.request
+
+import httpx
 
 from app.config import settings
 from app.services.storage import export_paths
 
 log = logging.getLogger(__name__)
 
-WIDTH, HEIGHT = (int(x) for x in settings.video_resolution.split("x"))
 FPS = settings.video_fps
 
-FONT = "DejaVuSans"
+STYLES: dict[str, dict] = {
+    "news-dark": {
+        "bg": "#101820", "bar": "#0b3d91", "bar_alpha": 0.75,
+        "title_color": "white", "sub_color": "white", "textcolor": "white",
+    },
+    "news-light": {
+        "bg": "#f4f6f9", "bar": "#2563eb", "bar_alpha": 0.85,
+        "title_color": "#0b1b33", "sub_color": "#0b1b33", "textcolor": "#101820",
+    },
+    "minimal": {
+        "bg": "#000000", "bar": None, "bar_alpha": 0,
+        "title_color": "white", "sub_color": "#9aa7b5", "textcolor": "white",
+    },
+}
+
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+
+def _esc(text: str) -> str:
+    return text.replace("\\", "").replace(":", "\\:").replace("'", "").replace("%", "")
 
 
 def _ffprobe_duration(path: str) -> float:
@@ -33,28 +60,55 @@ def _ffprobe_duration(path: str) -> float:
     return float(out.stdout.strip())
 
 
-def _esc(text: str) -> str:
-    return text.replace("\\", "").replace(":", "\\:").replace("'", "").replace("%", "")
+def _style(resolution: str, style_name: str) -> dict:
+    width, height = (int(x) for x in resolution.split("x"))
+    s = dict(STYLES.get(style_name, STYLES["news-dark"]))
+    vertical = height > width
+    # Skalierung der Typo für kleine Auflösungen / Vertikal
+    scale = width / 1920 if not vertical else width / 1080
+    s.update({
+        "width": width, "height": height, "vertical": vertical,
+        "title_size": int(58 * scale), "sub_size": int(34 * scale),
+    })
+    if vertical:
+        s["title_y"] = "h*0.80"
+        s["sub_y"] = "h*0.88"
+        s["bar_y"] = int(height * 0.74)
+        s["bar_h"] = int(height * 0.16)
+    else:
+        s["title_y"] = "h*0.75"
+        s["sub_y"] = "h*0.85"
+        s["bar_y"] = int(height * 0.72)
+        s["bar_h"] = int(height * 0.18)
+    return s
 
 
-def _render_segment(video_out: str, audio_path: str, headline: str, sub: str) -> str:
-    """Erzeugt ein Segment: Titelkarte + Sprechaudio."""
+def _render_segment(video_out: str, audio_path: str, headline: str, sub: str,
+                    style_name: str, resolution: str) -> str:
+    s = _style(resolution, style_name)
     duration = max(_ffprobe_duration(audio_path) + 1.0, 3.0)
-    vf = (
-        f"drawbox=x=0:y=0:w={WIDTH}:h={HEIGHT}:color=#101820:t=fill,"
-        f"drawbox=x=0:y={int(HEIGHT * 0.72)}:w={WIDTH}:h={int(HEIGHT * 0.18)}:color=#0b3d91@0.75:t=fill,"
-        f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-        f"text='{_esc(headline)}':fontcolor=white:fontsize=58:"
-        f"x=(w-text_w)/2:y=h*0.75,"
-        f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"text='{_esc(sub)}':fontcolor=white:fontsize=34:"
-        f"x=(w-text_w)/2:y=h*0.85"
+
+    parts = [f"drawbox=x=0:y=0:w={s['width']}:h={s['height']}:color={s['bg']}:t=fill"]
+    if s.get("bar"):
+        parts.append(
+            f"drawbox=x=0:y={s['bar_y']}:w={s['width']}:h={s['bar_h']}:"
+            f"color={s['bar']}@{s['bar_alpha']}:t=fill"
+        )
+    parts.append(
+        f"drawtext=fontfile={FONT_BOLD}:text='{_esc(headline)}':"
+        f"fontcolor={s['title_color']}:fontsize={s['title_size']}:"
+        f"x=(w-text_w)/2:y={s['title_y']}"
+    )
+    parts.append(
+        f"drawtext=fontfile={FONT}:text='{_esc(sub)}':"
+        f"fontcolor={s['sub_color']}:fontsize={s['sub_size']}:"
+        f"x=(w-text_w)/2:y={s['sub_y']}"
     )
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"color=c=#101820:s={WIDTH}x{HEIGHT}:r={FPS}:d={duration}",
+        "-f", "lavfi", "-i", f"color=c={s['bg']}:s={s['width']}x{s['height']}:r={FPS}:d={duration}",
         "-i", audio_path,
-        "-vf", vf,
+        "-vf", ",".join(parts),
         "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-shortest",
         video_out,
@@ -79,28 +133,42 @@ def _concat(files: list[str], out_path: str, copy: bool = False) -> str:
     return out_path
 
 
-def render_episode(episode, items) -> dict:
-    """Rendert alle Segmente zu MP4 + MP3 und schreibt das Production JSON.
+def _render_webhook(production: dict, paths: dict, webhook_url: str) -> None:
+    """Externer Renderer: POST Production JSON, Antwort als Dateien speichern."""
+    resp = httpx.post(webhook_url, json=production, timeout=1800)
+    resp.raise_for_status()
+    content_type = resp.headers.get("content-type", "")
+    if "json" in content_type:
+        data = resp.json()
+        video_b64 = data.get("video_b64") or data.get("video")
+        audio_b64 = data.get("audio_b64") or data.get("audio")
+        if video_b64 and audio_b64:
+            import base64
+            with open(paths["video"], "wb") as fh:
+                fh.write(base64.b64decode(video_b64))
+            with open(paths["audio"], "wb") as fh:
+                fh.write(base64.b64decode(audio_b64))
+            return
+        raise RuntimeError("Webhook-Antwort ohne video_b64/audio_b64")
+    if "video" in content_type:
+        with open(paths["video"], "wb") as fh:
+            fh.write(resp.content)
+        raise RuntimeError("Webhook lieferte nur Video – Audio-Download separat implementieren")
+    raise RuntimeError(f"Webhook-Antworttyp nicht unterstützt: {content_type}")
 
-    Return: {"video": ..., "audio": ..., "json": ...} (absolute Pfade)
-    """
-    slug = f"{episode.city.name.lower().replace(' ', '-')}-{episode.date}" if episode.city else f"episode-{episode.id}"
+
+def render_episode(episode, items, *, backend: str = "ffmpeg", style: str | None = None,
+                   resolution: str | None = None, webhook_url: str = "") -> dict:
+    """Rendert die Sendung. Rückgabe: Pfade + Production JSON (als Dict)."""
+    style = style or settings.video_style
+    resolution = resolution or settings.video_resolution
+    slug = f"{episode.city.name.lower().replace(' ', '-').replace('ä', 'ae').replace('ö', 'oe').replace('ü', 'ue')}-{episode.date}" \
+        if episode.city else f"episode-{episode.id}"
     paths = export_paths(slug)
-
-    segments = []
-    for item in items:
-        if not item.voice_file or not os.path.exists(item.voice_file):
-            raise RuntimeError(f"Voice-Datei fehlt für Item {item.id}")
-        headline = item.headline or "Nachricht"
-        sub = episode.city.name if episode.city else "Lokal"
-        seg_video = _render_segment(item.video_file or video_tmp(item.id), item.voice_file, headline, sub)
-        segments.append(seg_video)
-
-    video_file = _concat(segments, paths["video"])
-    audio_file = _concat([i.voice_file for i in items if i.voice_file], paths["audio"], copy=True)
 
     production = {
         "episode": {"id": episode.id, "title": episode.title, "duration": episode.target_duration},
+        "render": {"backend": backend, "style": style, "resolution": resolution, "fps": FPS},
         "segments": [
             {
                 "type": item.seg_type,
@@ -117,9 +185,25 @@ def render_episode(episode, items) -> dict:
     with open(paths["json"], "w", encoding="utf-8") as fh:
         json.dump(production, fh, ensure_ascii=False, indent=2)
 
+    if backend == "webhook":
+        if not webhook_url:
+            raise RuntimeError("renderer_webhook_url nicht gesetzt (Einstellungen)")
+        _render_webhook(production, paths, webhook_url)
+        return {"video": paths["video"], "audio": paths["audio"], "json": paths["json"], "production": production}
+
+    # ---- FFmpeg-Backend ----
+    segments = []
+    for item in items:
+        if not item.voice_file or not os.path.exists(item.voice_file):
+            raise RuntimeError(f"Voice-Datei fehlt für Item {item.id}")
+        headline = item.headline or "Nachricht"
+        sub = episode.city.name if episode.city else "Lokal"
+        seg_video = os.path.join(paths["dir"], f"segment-{item.id:03d}.mp4")
+        _render_segment(seg_video, item.voice_file, headline, sub, style, resolution)
+        item.video_file = seg_video
+        segments.append(seg_video)
+
+    video_file = _concat(segments, paths["video"])
+    audio_file = _concat([i.voice_file for i in items if i.voice_file], paths["audio"], copy=True)
+
     return {"video": video_file, "audio": audio_file, "json": paths["json"], "production": production}
-
-
-def video_tmp(item_id: int) -> str:
-    import tempfile
-    return os.path.join(tempfile.gettempdir(), f"segment-{item_id}.mp4")

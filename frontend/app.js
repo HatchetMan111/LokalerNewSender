@@ -10,7 +10,6 @@ const STEPS = [
   { key: "review",       label: "Audio produziert / bereit zur Freigabe" },
 ];
 const DONE_OK = ["selected", "script_ready", "voice_ready", "rendered", "review", "approved", "published"];
-const VOICES = ["de-DE-KatjaNeural", "de-DE-ConradNeural", "de-DE-AmalaNeural", "de-DE-BerndNeural", "de-DE-ElkeNeural", "de-DE-KasperNeural", "de-DE-LeneNeural", "de-DE-RainerNeural"];
 
 let currentEpisode = null;
 let pollTimer = null;
@@ -247,34 +246,89 @@ async function deleteSource(id) {
 }
 
 // ------------------------------ Einstellungen ------------------------------
-async function loadSettings() {
-  const all = await api("/api/settings");
-  const categories = {};
-  all.forEach((s) => { (categories[s.category] = categories[s.category] || []).push(s); });
+let REGISTRY = null;
 
-  const catTitles = { ai: "KI / Texterstellung", tts: "Sprecher & Audio", scheduler: "Automatik", episode: "Sendung", general: "Allgemein" };
-  const selectOptions = {
-    llm_provider: [["mock", "Mock (ohne API-Key)"], ["openai", "OpenAI"]],
-    tts_voice: VOICES.map((v) => [v, v.replace("de-DE-", "").replace("Neural", "")]),
+async function loadSettings() {
+  const [all, reg] = await Promise.all([api("/api/settings"), api("/api/settings/registry")]);
+  REGISTRY = reg;
+
+  const catTitles = { ai: "KI / Texterstellung", tts: "Sprecher & Audio", video: "Video-Produktion", scheduler: "Automatik", episode: "Sendung", general: "Allgemein" };
+  const rows = {
+    llm_provider: { kind: "select", options: Object.entries(reg.llm).map(([k, v]) => [k, v.label]) },
+    llm_model: { kind: "select", options: [], dynamic: "llm_model" },
+    tts_provider: { kind: "select", options: Object.entries(reg.tts).map(([k, v]) => [k, v.label]) },
+    tts_voice: { kind: "select", options: [], dynamic: "tts_voice" },
+    tts_model: { kind: "text" },
+    tts_base_url: { kind: "text", placeholder: "http://localai:8080/v1" },
+    renderer_backend: { kind: "select", options: Object.entries(reg.video.backends).map(([k, v]) => [k, v]) },
+    renderer_webhook_url: { kind: "text", placeholder: "https://mein-renderer/webhook" },
+    video_style: { kind: "select", options: reg.video.styles.map((s) => [s, s]) },
+    video_resolution: { kind: "select", options: reg.video.resolutions.map((r) => [r, r + (r.includes("x") && parseInt(r.split("x")[0]) < parseInt(r.split("x")[1]) ? " (vertikal 9:16)" : "")]) },
+    import_interval_minutes: { kind: "text" },
+    target_duration: { kind: "text" },
   };
 
-  $("settings-panels").innerHTML = Object.entries(categories).map(([cat, items]) => `
+  const needsHint = {};
+  Object.entries(reg.llm).forEach(([k, v]) => { needsHint[k] = v.needs.join(", "); });
+  Object.entries(reg.tts).forEach(([k, v]) => { needsHint["tts_" + k] = v.needs.join(", "); });
+
+  $("settings-panels").innerHTML = Object.entries(groupBy(all, "category")).map(([cat, items]) => `
     <div class="panel">
       <h2>${catTitles[cat] || cat}</h2>
-      ${items.map((s) => `
+      ${items.map((s) => {
+        const cfg = rows[s.key] || { kind: "text" };
+        const hint = needsHint[s.key === "llm_provider" ? s.value : s.key] || needsHint[s.key];
+        return `
         <div class="setting-row">
           <div>
-            <div class="setting-label">${esc(s.label || s.key)}</div>
+            <div class="setting-label">${esc(s.label || s.key)}${hint ? ` <span class="badge">benötigt: ${esc(hint)}</span>` : ""}</div>
             <div class="setting-desc">${esc(s.description || "")}</div>
           </div>
-          ${selectOptions[s.key]
-            ? `<select data-setting="${s.key}">${selectOptions[s.key].map(([v, l]) => `<option value="${v}" ${v === s.value ? "selected" : ""}>${l}</option>`).join("")}</select>`
-            : `<input type="text" data-setting="${s.key}" value="${esc(s.value)}">`}
+          ${cfg.kind === "select"
+            ? `<select data-setting="${s.key}">${(cfg.options || []).map(([v, l]) => `<option value="${v}" ${v === s.value ? "selected" : ""}>${l}</option>`).join("")}</select>`
+            : `<input type="text" data-setting="${s.key}" value="${esc(s.value)}" placeholder="${esc(cfg.placeholder || "")}">`}
           <button class="btn small" onclick="saveSetting('${s.key}')">SPEICHERN</button>
-        </div>`).join("")}
+        </div>`;
+      }).join("")}
+      ${cat === "ai" ? `<div class="test-row"><button class="btn" onclick="testLLM()">KI-ANBIETER TESTEN</button><span id="llm-test-result" class="muted"></span></div>` : ""}
+      ${cat === "tts" ? `<div class="test-row"><button class="btn" onclick="testTTS()">STIMME TESTEN (Anhören)</button><span id="tts-test-result" class="muted"></span></div>` : ""}
     </div>`).join("");
 
+  // Dynamische Optionen nachziehen (Modelle/Stimmen je nach gewähltem Anbieter)
+  updateDynamicOptions();
+  ["llm_provider", "tts_provider"].forEach((k) => {
+    document.querySelector(`[data-setting="${k}"]`)?.addEventListener("change", updateDynamicOptions);
+  });
+
   renderCityList();
+}
+
+function groupBy(arr, key) {
+  const out = {};
+  arr.forEach((item) => { (out[item[key]] = out[item[key]] || []).push(item); });
+  return out;
+}
+
+function updateDynamicOptions() {
+  if (!REGISTRY) return;
+  const llmSel = document.querySelector('[data-setting="llm_provider"]');
+  const modelSel = document.querySelector('[data-setting="llm_model"]');
+  if (llmSel && modelSel) {
+    const provider = llmSel.value;
+    const meta = REGISTRY.llm[provider] || { models: [] };
+    const current = modelSel.value || "";
+    modelSel.innerHTML =
+      `<option value="">Anbieter-Standard${provider !== "custom" && meta.models[0] ? ` (${meta.models[0]})` : ""}</option>` +
+      meta.models.map((m) => `<option value="${m}" ${m === current ? "selected" : ""}>${m}</option>`).join("");
+  }
+  const ttsSel = document.querySelector('[data-setting="tts_provider"]');
+  const voiceSel = document.querySelector('[data-setting="tts_voice"]');
+  if (ttsSel && voiceSel) {
+    const provider = ttsSel.value;
+    const meta = REGISTRY.tts[provider] || { voices: [] };
+    const current = voiceSel.value || "";
+    voiceSel.innerHTML = meta.voices.map((v) => `<option value="${v}" ${v === current ? "selected" : ""}>${v}</option>`).join("");
+  }
 }
 
 async function saveSetting(key) {
@@ -283,7 +337,31 @@ async function saveSetting(key) {
   try {
     await api(`/api/settings/${key}`, { method: "PATCH", body: JSON.stringify({ value: el.value }) });
     toast(`„${key}" gespeichert`, "ok");
+    if (key === "llm_provider" || key === "tts_provider") updateDynamicOptions();
   } catch (err) { toast(err.message, "err"); }
+}
+
+async function testLLM() {
+  const span = $("llm-test-result");
+  span.textContent = "Teste …";
+  try {
+    const res = await api("/api/settings/test/llm", { method: "POST" });
+    if (res.ok) span.innerHTML = `<span class="badge ok">OK</span> ${esc(res.provider)} · ${esc(res.model)} → „${esc(res.answer)}"`;
+    else span.innerHTML = `<span class="badge err">FEHLER</span> ${esc(res.error)}${res.fallback ? " – Pipeline nutzt Mock" : ""}`;
+  } catch (err) { span.innerHTML = `<span class="badge err">FEHLER</span> ${esc(err.message)}`; }
+}
+
+async function testTTS() {
+  const span = $("tts-test-result");
+  span.textContent = "Erzeuge Testaufnahme …";
+  try {
+    const res = await api("/api/settings/test/tts", { method: "POST" });
+    if (res.ok) {
+      span.innerHTML = `<span class="badge ok">OK</span> <a href="${res.file_url}" target="_blank" class="link">Test anhören (${Math.round(res.file_bytes / 1024)} KB)</a>`;
+    } else {
+      span.innerHTML = `<span class="badge err">FEHLER</span> ${esc(res.error)}${res.fallback ? " – Pipeline nutzt Edge" : ""}`;
+    }
+  } catch (err) { span.innerHTML = `<span class="badge err">FEHLER</span> ${esc(err.message)}`; }
 }
 
 async function addCity() {

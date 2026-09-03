@@ -179,9 +179,15 @@ def task_run_pipeline(episode_id: int) -> dict:
                 db.commit()
             _set_status(db, episode, "voice_ready")
 
-            # ---------- 5. RENDER (FFmpeg) ----------
+            # ---------- 5. RENDER (FFmpeg oder Webhook-Renderer) ----------
             _set_status(db, episode, "rendering")
-            result = render_episode(episode, sorted(items, key=lambda i: i.position))
+            result = render_episode(
+                episode, sorted(items, key=lambda i: i.position),
+                backend=settings_svc.renderer_backend(db),
+                style=settings_svc.video_style(db),
+                resolution=settings_svc.video_resolution(db),
+                webhook_url=settings_svc.renderer_webhook_url(db),
+            )
             for item in items:
                 item.status = "rendered"
             episode.video_file = result["video"]

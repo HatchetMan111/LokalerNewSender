@@ -86,6 +86,10 @@ select:focus, input:focus { outline: none; border-color: var(--accent); }
 /* ---------- Einstellungen ---------- */
 .setting-row { display: grid; grid-template-columns: 1fr minmax(200px, 320px) auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px dashed var(--border); }
 .setting-row:last-child { border-bottom: none; }
+.test-row { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.test-row .badge { vertical-align: middle; }
+.link { color: var(--accent2); }
+.setting-label .badge { margin-left: 8px; font-size: 10px; padding: 2px 7px; }
 .setting-label { font-size: 14px; font-weight: 600; }
 .setting-desc { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 .city-list { list-style: none; padding: 0; margin: 14px 0 0; display: flex; flex-direction: column; gap: 8px; }
