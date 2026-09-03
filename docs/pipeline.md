@@ -41,3 +41,19 @@ Segmente mit Sprechaudio, Headline, Lower Third, Timing.
 
 Später: echte Bildassets, Intro/Outro-Videos, Musik, Transitions, Templates
 (`renderer/templates/`) – das JSON-Schema bleibt identisch.
+
+## Untertitel & Audio-Politur (video-use-Prinzipien)
+
+- **Wort-Timings:** Edge-TTS liefert pro Wort Start/Ende (Sidecar
+  `<voice>.words.json`). Der Renderer gruppiert sie in kurze Einblendungen
+  (max. 4 Wörter / 3,5 s) und brennt sie per `drawtext enable=between(t)`
+  ein – schaltbar über Einstellung `subtitles`.
+- **Fades:** 30 ms Ein-/Ausblendung pro Segment gegen Knackser an Schnitten.
+- **Lautheit:** `loudnorm` (I=-16, TP=-1.5, LRA=11) auf dem fertigen Mix.
+
+## Qualitätskontrolle (Self-Eval)
+
+Nach jedem Render läuft `services/qc.py`: Datei-Größen, h264-Stream,
+Auflösung vs. Einstellung, Tonspur vorhanden, Dauer plausibel, Pegel nicht
+stumm. Ergebnis landet als `ai_jobs`-Eintrag (Typ `qc`); bei Fehlern geht die
+Episode auf `FAILED` mit konkretem Grund statt ein kaputtes Video zu liefern.

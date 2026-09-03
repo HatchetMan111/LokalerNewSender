@@ -34,6 +34,8 @@ INSERT INTO settings (key, value, category, label, description) VALUES
    'news-dark (dunkel/blau) | news-light (hell) | minimal (schwarz)'),
   ('video_resolution', '1920x1080', 'video', 'Auflösung',
    '16:9: 1920x1080, 1280x720, 3840x2160 · Vertikal 9:16 (Shorts/Reels): 1080x1920, 720x1280'),
+  ('subtitles', 'off', 'video', 'Untertitel einbrennen',
+   'on = wortgenaue Untertitel aus TTS-Timings ins Video brennen (video-use-Prinzip), off = keine'),
   -- Automatik & Sendung
   ('import_interval_minutes', '60', 'scheduler', 'RSS-Import-Intervall', 'Alle X Minuten importiert der Scheduler neue Nachrichten'),
   ('target_duration', '600', 'episode', 'Standard-Sendungslänge', 'Sekunden; 600 = 10 Minuten')

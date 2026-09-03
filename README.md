@@ -7,6 +7,14 @@ gesprochene Nachrichtensendung (MP4 + MP3) – vollständig automatisch:
 
 ```
 Datenbank → redaktionelle Logik → KI → Medienproduktion → Qualitätskontrolle
+
+**Neu (v0.4):** Wortgenaue **Untertitel** aus TTS-Timings, 30ms-Fades und
+Loudness-Normalisierung am Audio sowie eine automatische
+**Qualitätskontrolle** nach jedem Render (Streams, Auflösung, Pegel, Dauer).
+Techniken inspiriert von [browser-use/video-use](https://github.com/browser-use/video-use)
+(Transkript-als-Schnittgrundlage, Self-Eval nach dem Render) – umgesetzt als
+native Pipeline-Stufen, ohne Extra-Abhängigkeiten: `Einstellungen → Video →
+Untertitel einbrennen`.
 ```
 
 ## Architektur (Single-VM-first)

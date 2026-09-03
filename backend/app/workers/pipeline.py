@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, timezone
+import os
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -20,7 +21,7 @@ from app.models import AIJob, Article, City, Episode, EpisodeItem
 from app.services import importer as importer_svc
 from app.services.ai import get_llm
 from app.services.renderer import render_episode
-from app.services.storage import export_paths, slugify, voice_path
+from app.services.storage import voice_path
 from app.services.tts import get_tts
 from app.workers.celery_app import celery_app
 
@@ -45,6 +46,17 @@ def _record_job(db: Session, type_: str, episode_id: int | None, provider: str,
     ))
     # Sofort committen: sonst gehen Audit-Zeilen im Fehlerpfad (rollback) verloren
     db.commit()
+
+
+def _voice_duration(path: str | None) -> float:
+    """Dauer einer Voice-Datei in Sekunden (0.0 bei Fehler)."""
+    if not path or not os.path.exists(path):
+        return 0.0
+    try:
+        from app.services.renderer import _ffprobe_duration
+        return _ffprobe_duration(path)
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def _set_status(db: Session, episode: Episode, status: str) -> None:
@@ -212,7 +224,10 @@ def task_run_pipeline(episode_id: int, start_from: str = "collecting",
                         # Leerer Sprechertext würde TTS crashen -> Headline sprechen
                         item.script = item.headline or "Nachricht"
                     vp = voice_path(episode.id, item.id)
-                    tts.synthesize(item.script, vp, voice=episode.voice_id)
+                    _, words = tts.synthesize_with_timings(item.script, vp, voice=episode.voice_id)
+                    # Wort-Timings als Sidecar für Untertitel (Renderer liest sie)
+                    with open(os.path.splitext(vp)[0] + ".words.json", "w", encoding="utf-8") as fh:
+                        json.dump(words, fh, ensure_ascii=False)
                     item.voice_file = vp
                     item.status = "voice_ready"
                     db.commit()
@@ -221,12 +236,14 @@ def task_run_pipeline(episode_id: int, start_from: str = "collecting",
             # ---------- 5. RENDER (FFmpeg oder Webhook-Renderer) ----------
             if run("render"):
                 _set_status(db, episode, "rendering")
+                resolution = settings_svc.video_resolution(db)
                 result = render_episode(
                     episode, sorted(items, key=lambda i: i.position),
                     backend=settings_svc.renderer_backend(db),
                     style=settings_svc.video_style(db),
-                    resolution=settings_svc.video_resolution(db),
+                    resolution=resolution,
                     webhook_url=settings_svc.renderer_webhook_url(db),
+                    subtitles=settings_svc.subtitles_enabled(db),
                 )
                 for item in items:
                     item.status = "rendered"
@@ -234,6 +251,22 @@ def task_run_pipeline(episode_id: int, start_from: str = "collecting",
                 episode.audio_file = result["audio"]
                 episode.script = result["production"]  # Production JSON als Dict (JSONB)
                 _set_status(db, episode, "rendered")
+
+                # ---------- 6. QUALITÄTSKONTROLLE (Self-Eval, video-use-Prinzip)
+                from app.services import qc as qc_svc
+                expected = sum(
+                    _voice_duration(i.voice_file) for i in items if i.voice_file
+                ) + len(items) * 1.0
+                qc_result = qc_svc.check_episode(
+                    result["video"], result["audio"],
+                    expected_resolution=resolution, expected_duration=expected,
+                )
+                _record_job(db, "qc", episode.id, "ffmpeg", settings_svc.video_style(db),
+                            {"video": result["video"], "audio": result["audio"]},
+                            {"passed": qc_result["passed"], "checks": qc_result["checks"]})
+                if not qc_result["passed"]:
+                    failed = [c["name"] for c in qc_result["checks"] if not c["ok"]]
+                    raise RuntimeError(f"Qualitätskontrolle fehlgeschlagen: {', '.join(failed)}")
                 _set_status(db, episode, "review")
 
                 return {"episode_id": episode.id, "status": "review",

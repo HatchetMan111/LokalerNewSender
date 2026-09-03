@@ -50,22 +50,61 @@ class TTSProvider:
     def synthesize(self, text: str, out_path: str, voice: str | None = None) -> str:
         raise NotImplementedError
 
+    def synthesize_with_timings(self, text: str, out_path: str,
+                                voice: str | None = None) -> tuple[str, list[dict]]:
+        """Wie synthesize(), liefert zusätzlich Wort-Timings für Untertitel.
+
+        Rückgabe: (Pfad, [{"word": str, "start": s, "end": s}, ...]).
+        Anbieter ohne Wortgrenzen geben eine leere Liste zurück.
+        """
+        return self.synthesize(text, out_path, voice), []
+
 
 class EdgeTTS(TTSProvider):
     name = "edge"
 
     def synthesize(self, text: str, out_path: str, voice: str | None = None) -> str:
+        path, _ = self.synthesize_with_timings(text, out_path, voice)
+        return path
+
+    def synthesize_with_timings(self, text: str, out_path: str,
+                                voice: str | None = None) -> tuple[str, list[dict]]:
         import edge_tts
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         voice = edge_voice(voice)
+        words: list[dict] = []
 
         async def _run():
-            communicate = edge_tts.Communicate(text, voice)
-            await communicate.save(out_path)
+            communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary")
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio":
+                    with open(out_path, "ab") as fh:
+                        fh.write(chunk.get("data") or b"")
+                elif chunk.get("type") == "WordBoundary":
+                    # offset/duration in 100ns-Einheiten -> Sekunden
+                    try:
+                        start = float(chunk.get("offset", 0)) / 10_000_000
+                        dur = float(chunk.get("duration", 0)) / 10_000_000
+                    except (TypeError, ValueError):
+                        continue
+                    text_word = (chunk.get("text") or "").strip()
+                    if text_word:
+                        words.append({"word": text_word, "start": start, "end": start + dur})
 
+        # Datei neu anlegen (append-Modus im Stream)
+        if os.path.exists(out_path):
+            os.unlink(out_path)
         asyncio.run(_run())
-        return out_path
+        if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            # Fallback: normaler Save-Pfad, falls der Stream kein Audio lieferte
+            import edge_tts as _edge
+
+            async def _save():
+                await _edge.Communicate(text, voice).save(out_path)
+
+            asyncio.run(_save())
+        return out_path, words
 
 
 class OpenAISpeech(TTSProvider):

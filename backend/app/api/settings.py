@@ -32,6 +32,7 @@ def provider_registry(db: Session = Depends(get_db)):
             "styles": settings_svc.VIDEO_STYLES,
             "resolutions": settings_svc.VIDEO_RESOLUTIONS,
             "backends": settings_svc.RENDERER_BACKENDS,
+            "subtitles": {"off": "Aus", "on": "An (Wort-Timings)"},
         },
         "current": {
             "llm_provider": settings_svc.llm_provider(db),

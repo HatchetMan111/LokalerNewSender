@@ -181,6 +181,10 @@ def renderer_webhook_url(db: Session) -> str:
     return get_setting(db, "renderer_webhook_url", env_settings.renderer_webhook_url)
 
 
+def subtitles_enabled(db: Session) -> bool:
+    return str(get_setting(db, "subtitles", "off")).strip().lower() in ("on", "1", "true", "yes")
+
+
 def import_interval_minutes(db: Session) -> int:
     try:
         return int(get_setting(db, "import_interval_minutes", env_settings.import_interval_minutes))

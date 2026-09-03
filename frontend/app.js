@@ -322,6 +322,7 @@ async function loadSettings() {
     tts_base_url: { kind: "text", placeholder: "http://localai:8080/v1" },
     renderer_backend: { kind: "select", options: Object.entries(reg.video.backends).map(([k, v]) => [k, v]) },
     renderer_webhook_url: { kind: "text", placeholder: "https://mein-renderer/webhook" },
+    subtitles: { kind: "select", options: Object.entries(reg.video.subtitles || { off: "Aus", on: "An" }).map(([k, v]) => [k, v]) },
     video_style: { kind: "select", options: reg.video.styles.map((s) => [s, s]) },
     video_resolution: { kind: "select", options: reg.video.resolutions.map((r) => [r, r + (r.includes("x") && parseInt(r.split("x")[0]) < parseInt(r.split("x")[1]) ? " (vertikal 9:16)" : "")]) },
     import_interval_minutes: { kind: "text" },

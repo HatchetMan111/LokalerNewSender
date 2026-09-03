@@ -82,10 +82,47 @@ def _style(resolution: str, style_name: str) -> dict:
     return s
 
 
+def _load_words(voice_file: str) -> list[dict]:
+    """Lädt Wort-Timings aus der Sidecar-Datei <voice>.words.json (TTS)."""
+    sidecar = os.path.splitext(voice_file)[0] + ".words.json"
+    if not os.path.exists(sidecar):
+        return []
+    try:
+        with open(sidecar, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return [w for w in data if w.get("word") and w.get("end", 0) > w.get("start", 0)]
+    except (OSError, ValueError):
+        return []
+
+
+def _subtitle_chunks(words: list[dict], max_words: int = 4, max_secs: float = 3.5) -> list[dict]:
+    """Gruppiert Wörter in kurze Einblendungen (video-use-Stil: wenige Wörter)."""
+    chunks: list[dict] = []
+    current: list[dict] = []
+    for w in words:
+        current.append(w)
+        span = w["end"] - current[0]["start"]
+        if len(current) >= max_words or span >= max_secs:
+            chunks.append({
+                "text": " ".join(x["word"] for x in current),
+                "start": current[0]["start"],
+                "end": current[-1]["end"],
+            })
+            current = []
+    if current:
+        chunks.append({
+            "text": " ".join(x["word"] for x in current),
+            "start": current[0]["start"],
+            "end": current[-1]["end"],
+        })
+    return chunks
+
+
 def _render_segment(video_out: str, audio_path: str, headline: str, sub: str,
-                    style_name: str, resolution: str) -> str:
+                    style_name: str, resolution: str, subtitles: bool = False) -> str:
     s = _style(resolution, style_name)
-    duration = max(_ffprobe_duration(audio_path) + 1.0, 3.0)
+    audio_dur = _ffprobe_duration(audio_path)
+    duration = max(audio_dur + 1.0, 3.0)
 
     parts = [f"drawbox=x=0:y=0:w={s['width']}:h={s['height']}:color={s['bg']}:t=fill"]
     if s.get("bar"):
@@ -103,11 +140,26 @@ def _render_segment(video_out: str, audio_path: str, headline: str, sub: str,
         f"fontcolor={s['sub_color']}:fontsize={s['sub_size']}:"
         f"x=(w-text_w)/2:y={s['sub_y']}"
     )
+    if subtitles:
+        # Wortgenaue Untertitel aus TTS-Timings (video-use-Prinzip)
+        sub_size = max(16, int(s["height"] * 0.028))
+        sub_y = "h*0.62" if not s["vertical"] else "h*0.66"
+        for chunk in _subtitle_chunks(_load_words(audio_path)):
+            parts.append(
+                f"drawtext=fontfile={FONT}:text='{_esc(chunk['text'])}':"
+                f"fontcolor=white:fontsize={sub_size}:borderw=2:bordercolor=black@0.8:"
+                f"x=(w-text_w)/2:y={sub_y}:"
+                f"enable='between(t,{chunk['start']:.2f},{chunk['end']:.2f})'"
+            )
+    # 30ms Fades gegen Knackser an Schnittkanten (video-use-Prinzip)
+    fade_out_start = max(0.0, audio_dur - 0.03)
+    af = f"afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out_start:.2f}:d=0.03"
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"color=c={s['bg']}:s={s['width']}x{s['height']}:r={FPS}:d={duration}",
         "-i", audio_path,
         "-vf", ",".join(parts),
+        "-af", af,
         "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-shortest",
         video_out,
@@ -116,7 +168,8 @@ def _render_segment(video_out: str, audio_path: str, headline: str, sub: str,
     return video_out
 
 
-def _concat(files: list[str], out_path: str, copy: bool = False) -> str:
+def _concat(files: list[str], out_path: str, copy: bool = False,
+            loudnorm: bool = False) -> str:
     listfile = out_path + ".txt"
     with open(listfile, "w") as fh:
         for f in files:
@@ -125,6 +178,9 @@ def _concat(files: list[str], out_path: str, copy: bool = False) -> str:
     if copy:
         cmd += ["-c", "copy", out_path]
     else:
+        if loudnorm:
+            # Einheitliche Sprachlautheit für die ganze Sendung
+            cmd += ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"]
         cmd += ["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "160k", out_path]
     subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -157,7 +213,8 @@ def _render_webhook(production: dict, paths: dict, webhook_url: str) -> None:
 
 
 def render_episode(episode, items, *, backend: str = "ffmpeg", style: str | None = None,
-                   resolution: str | None = None, webhook_url: str = "") -> dict:
+                   resolution: str | None = None, webhook_url: str = "",
+                   subtitles: bool = False) -> dict:
     """Rendert die Sendung. Rückgabe: Pfade + Production JSON (als Dict)."""
     style = style or settings.video_style
     resolution = resolution or settings.video_resolution
@@ -168,7 +225,8 @@ def render_episode(episode, items, *, backend: str = "ffmpeg", style: str | None
 
     production = {
         "episode": {"id": episode.id, "title": episode.title, "duration": episode.target_duration},
-        "render": {"backend": backend, "style": style, "resolution": resolution, "fps": FPS},
+        "render": {"backend": backend, "style": style, "resolution": resolution, "fps": FPS,
+                   "subtitles": subtitles},
         "segments": [
             {
                 "type": item.seg_type,
@@ -199,11 +257,12 @@ def render_episode(episode, items, *, backend: str = "ffmpeg", style: str | None
         headline = item.headline or "Nachricht"
         sub = episode.city.name if episode.city else "Lokal"
         seg_video = os.path.join(paths["dir"], f"segment-{item.id:03d}.mp4")
-        _render_segment(seg_video, item.voice_file, headline, sub, style, resolution)
+        _render_segment(seg_video, item.voice_file, headline, sub, style, resolution,
+                        subtitles=subtitles)
         item.video_file = seg_video
         segments.append(seg_video)
 
-    video_file = _concat(segments, paths["video"])
+    video_file = _concat(segments, paths["video"], loudnorm=True)
     audio_file = _concat([i.voice_file for i in items if i.voice_file], paths["audio"], copy=True)
 
     return {"video": video_file, "audio": audio_file, "json": paths["json"], "production": production}
