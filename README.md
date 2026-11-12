@@ -87,7 +87,7 @@ tail -f /var/log/local-news-install.log
 
 ```bash
 git clone https://github.com/HatchetMan111/LokalerNewSender.git
-cd local-news-platform
+cd LokalerNewSender
 cp .env.example .env          # Passwörter/Keys anpassen
 docker compose up -d --build
 ```
@@ -135,6 +135,14 @@ OpenAI Speech (alloy, echo, nova, …) · LocalAI/eigener Endpunkt.
 Render-Service via Webhook), Stil (`news-dark` / `news-light` / `minimal`),
 Auflösung inkl. **vertikal 9:16** (1080x1920, 720x1280) für
 Shorts/Reels/TikTok.
+
+**Oberfläche (v0.5):** React/Vite-Neubau der Newsroom-UI – produktionsreifer
+Stepper (echter Zwischenstand statt 100 % bei Pause-Status), Sendeplan-Editor
+mit Dirty-Anzeige, eigenes Filterpanel bei den Nachrichten (Stadt/Status/Suche),
+Toggle-Switches für Quellen, Produktions-Protokoll (welches Modell hat was
+geschrieben) und Live-Auto-Refresh der Sendungen-Liste während laufender
+Pipelines. Das Frontend baut im Docker-Container – auf der VM ist kein Node
+nötig.
 
 Dazu: RSS-Quellen verwalten (eigener Reiter), Städte anlegen, Import-Intervall,
 Standard-Sendungslänge. Änderungen greifen sofort (Worker lesen pro Job aus
@@ -197,7 +205,9 @@ local-news-platform/
 ├── db/init.sql                # PostgreSQL-Schema + Seed
 ├── backend/                   # FastAPI + Celery + Renderer
 │   └── app/{api,models,schemas,services,workers}
-├── frontend/                  # Newsroom-UI (HTML/JS, nginx)
+├── frontend/                  # Newsroom-UI (React/Vite, Build im Docker-Container)
+│   ├── Dockerfile             # Multi-Stage: node build → nginx (kein Node auf der VM nötig)
+│   └── src/{views,api,labels}
 ├── nginx/nginx.conf
 └── docs/                      # architecture, database, pipeline
 ```

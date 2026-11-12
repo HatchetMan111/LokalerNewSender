@@ -149,6 +149,16 @@ class SourceCreate(BaseModel):
     active: bool = True
 
 
+class SourceUpdate(BaseModel):
+    """Partial-Update: nur gesendete Felder ändern (z.B. nur active togglen)."""
+    name: Optional[str] = None
+    type: Optional[str] = None
+    rss_url: Optional[str] = None
+    url: Optional[str] = None
+    trust_score: Optional[int] = None
+    active: Optional[bool] = None
+
+
 router_sources = APIRouter(prefix="/api/sources", tags=["sources"])
 
 
@@ -169,11 +179,11 @@ def create_source(payload: SourceCreate, db: Session = Depends(get_db)):
 
 
 @router_sources.patch("/{source_id}", response_model=SourceOut)
-def update_source(source_id: int, payload: SourceCreate, db: Session = Depends(get_db)):
+def update_source(source_id: int, payload: SourceUpdate, db: Session = Depends(get_db)):
     src = db.get(Source, source_id)
     if not src:
         raise HTTPException(404, "Quelle nicht gefunden")
-    for field, value in payload.model_dump().items():
+    for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(src, field, value)
     db.commit()
     db.refresh(src)
