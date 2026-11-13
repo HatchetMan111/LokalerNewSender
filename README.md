@@ -99,6 +99,26 @@ http://<VM-IP>          → LOCAL NEWSROOM Dashboard
 http://<VM-IP>/api/docs → FastAPI (Swagger)
 ```
 
+### Troubleshooting (VM-Installer)
+
+Der In-VM-Installer läuft als systemd-Service (`local-news-install`) und
+wiederholt sich automatisch bei jedem Boot, bis der Stack gesund ist.
+
+```
+ssh newsadmin@<VM-IP>                # Passwort aus dem Installer-Abschluss
+tail -f /var/log/local-news-install.log     # Live-Log ([ERROR]-Zeilen = Ursache)
+sudo systemctl restart local-news-install   # Installation ohne Reboot erneut starten
+sudo docker compose -f /opt/local-news/docker-compose.yml ps   # Container-Status
+```
+
+Häufige Ursachen:
+- **Netz-Aussetzer beim Docker-Download**: Docker wird jetzt automatisch
+  3× mit apt-Reparatur zwischen den Versuchen installiert
+  (`Acquire::Retries=5` für alle apt-Aufrufe).
+- **[ERROR] Repository nicht ladbar**: `GITHUB_TOKEN=...` setzen (privates
+  Repo) oder den Repo-Tarball manuell nach `/opt/local-news-repo.tar.gz` schieben.
+- **Backend antwortet nicht**: `sudo docker compose logs backend --tail=50`.
+
 ## MVP-Workflow (Oberfläche)
 
 1. **Sendung erstellen** – Stadt, Datum, Format, Länge wählen → `SENDUNG GENERIEREN`

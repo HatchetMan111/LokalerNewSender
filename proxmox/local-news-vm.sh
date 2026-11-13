@@ -398,15 +398,37 @@ fi
 log "=== Local News Platform In-VM-Installer ==="
 
 # ---- Basispakete (Guest-Agent zuerst, damit die IP auf dem Host auftaucht) ----
+# Acquire::Retries: apt wiederholt fehlgeschlagene Downloads (z.B. CloudFront-
+# Timeouts bei großen Docker-Debs) automatisch, bevor die Installation kollabiert.
+APT_OPTS=(-o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60)
 log "[INFO] Installiere Basispakete (curl, git, qemu-guest-agent) ..."
-apt-get update -qq || true
-apt-get install -y -qq curl git qemu-guest-agent || true
+apt-get update -qq "\${APT_OPTS[@]}" || true
+apt-get install -y -qq "\${APT_OPTS[@]}" curl git qemu-guest-agent || true
 systemctl enable --now qemu-guest-agent || true
 
 # ---- Docker installieren ----
+# Netz-Aussetzer (CloudFront, CDN-Route, IPv4/IPv6-Mischbetrieb) sind häufig:
+# 3 Versuche, dazwischen apt-Reparatur (--fix-missing nutzt teils geladene Debs).
 if ! command -v docker >/dev/null 2>&1; then
   log "[INFO] Installiere Docker ..."
-  curl -fsSL https://get.docker.com | sh || { log "[ERROR] Docker-Installation fehlgeschlagen"; exit 1; }
+  DOCKER_INSTALLED=no
+  for i in 1 2 3; do
+    if curl -fsSL https://get.docker.com | sh; then
+      DOCKER_INSTALLED=yes
+      break
+    fi
+    log "[WARN] Docker-Installationsversuch \$i/3 fehlgeschlagen – repariere apt und versuche es erneut ..."
+    dpkg --configure -a >/dev/null 2>&1 || true
+    apt-get update -qq "\${APT_OPTS[@]}" || true
+    apt-get install -y -qq "\${APT_OPTS[@]}" --fix-missing \
+      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || true
+    command -v docker >/dev/null 2>&1 && { DOCKER_INSTALLED=yes; break; }
+    sleep 30
+  done
+  if [ "\$DOCKER_INSTALLED" != "yes" ]; then
+    log "[ERROR] Docker-Installation nach 3 Versuchen fehlgeschlagen (Netz der VM prüfen)"
+    exit 1
+  fi
   systemctl enable --now docker
 fi
 
@@ -483,15 +505,22 @@ if [ ! -f "\$BUILD_MARKER" ]; then
   BUILD_FLAG="--build"
 fi
 ATTEMPT=0
+COMPOSE_OK=no
 until [ \$ATTEMPT -ge 3 ]; do
   ATTEMPT=\$((ATTEMPT+1))
   log "[INFO] Docker Compose Start – Versuch \$ATTEMPT von 3 (erster Build dauert einige Minuten) ..."
   if docker compose up -d \$BUILD_FLAG && touch "\$BUILD_MARKER"; then
+    COMPOSE_OK=yes
     break
   fi
   log "[WARN] Versuch \$ATTEMPT fehlgeschlagen – warte 60 s und versuche erneut ..."
   sleep 60
 done
+if [ "\$COMPOSE_OK" != "yes" ]; then
+  log "[ERROR] Docker Compose-Start nach 3 Versuchen fehlgeschlagen"
+  docker compose logs --tail=30 2>/dev/null || true
+  exit 1
+fi
 
 # ---- Status + interner Gesundheitstest (3 Min., schwache Hosts brauchen das) ----
 sleep 15
@@ -663,10 +692,14 @@ REPO_DIR="${REPO_DIR:-}"
 REPO_TARBALL="/tmp/local-news-repo.tar.gz"
 rm -f "$REPO_TARBALL"
 if [[ -n "$REPO_DIR" && -f "$REPO_DIR/docker-compose.yml" ]]; then
-  tar czf "$REPO_TARBALL" -C "$REPO_DIR" --exclude='.git' --exclude='__pycache__' . && \
+  # node_modules/dist/venv ausgeschlossen: Das Dockerfile baut selbst (npm ci),
+  # und 40+ MB Ballast verlangsamen qm guest push erheblich.
+  tar czf "$REPO_TARBALL" -C "$REPO_DIR" --exclude='.git' --exclude='__pycache__' \
+    --exclude='node_modules' --exclude='dist' --exclude='.venv' . && \
     msg_info "Repo-Tarball aus ${REPO_DIR} erstellt"
 elif [[ -f "$(dirname "$0")/docker-compose.yml" ]]; then
-  tar czf "$REPO_TARBALL" -C "$(dirname "$0")" --exclude='.git' --exclude='__pycache__' . && \
+  tar czf "$REPO_TARBALL" -C "$(dirname "$0")" --exclude='.git' --exclude='__pycache__' \
+    --exclude='node_modules' --exclude='dist' --exclude='.venv' . && \
     msg_info "Repo-Tarball aus $(dirname "$0") erstellt"
 else
   REPO_PATH=$(echo "$CLONE_URL" | sed 's|\.git$||; s|https://[^@]*@github.com/||; s|https://github.com/||')
@@ -735,6 +768,10 @@ if [[ "$START_VM" == "yes" && -n "$VM_IP" ]]; then
     fi
     if [[ $((i % 12)) -eq 0 ]]; then
       PROGRESS=$(get_install_progress)
+      if [[ "$PROGRESS" == *"[ERROR]"* ]]; then
+        msg_info "Installer-Fehler erkannt – breche Warteschleife ab: ${PROGRESS}"
+        break
+      fi
       [[ -n "$PROGRESS" ]] && msg_info "  ... $((i * 5))s · Installer: ${PROGRESS}" \
                              || msg_info "  ... $((i * 5))s · (kein Installer-Log via Agent erreichbar)"
     fi
@@ -761,7 +798,15 @@ if [[ "$START_VM" != "yes" ]]; then
 elif [[ "$WEB_OK" == "yes" ]]; then
   echo -e "  ${GN}✓ Weboberfläche ist online: http://${IP_SHOW}${CL}"
 elif [[ -n "$VM_IP" ]]; then
-  echo -e "  ${YW}○ Weboberfläche noch nicht erreichbar (Build läuft ggf. noch)${CL}"
+  LAST_LOG=$(get_install_progress)
+  if [[ "$LAST_LOG" == *"[ERROR]"* ]]; then
+    echo -e "  ${RD}✗ Installer FEHLGESCHLAGEN: ${LAST_LOG#*] }${CL}"
+    echo -e "  Erneut starten: ssh ${SSH_USER}@${IP_SHOW}  →  sudo systemctl restart local-news-install"
+    echo -e "  Log: /var/log/local-news-install.log"
+  else
+    echo -e "  ${YW}○ Weboberfläche noch nicht erreichbar (Build läuft ggf. noch)${CL}"
+    [[ -n "$LAST_LOG" ]] && echo -e "  Letzte Installer-Meldung: ${LAST_LOG}"
+  fi
 else
   echo -e "  ${YW}○ Keine VM-IP ermittelt${CL}"
 fi
