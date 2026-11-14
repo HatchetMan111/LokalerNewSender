@@ -6,6 +6,7 @@ pydantic==2.*
 pydantic-settings==2.*
 celery==5.4.*
 redis==5.*
+packaging>=23  # kombu/redis-transport braucht es explizit seit kombu 5.4
 feedparser==6.*
 httpx==0.27.*
 edge-tts==6.*
