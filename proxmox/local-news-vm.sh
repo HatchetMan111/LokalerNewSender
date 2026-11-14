@@ -563,6 +563,14 @@ write_files:
 YAML_EOF
 sed 's/^/      /' "/tmp/local-news-install-${VMID}.sh" >> "/tmp/local-news-user-${VMID}.yaml"
 cat >> "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
+  # Debian-Cloud-Images setzen PasswordAuthentication no in sshd_config.d –
+  # explizit überschreiben, damit SSH-Passwort-Login zuverlässig klappt
+  # (cloud-init ssh_pwauth allein ist nicht in allen Boot-Phasen wirksam).
+  - path: /etc/ssh/sshd_config.d/40-news-password-auth.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication yes
+      KbdInteractiveAuthentication yes
   - path: /etc/systemd/system/local-news-install.service
     permissions: '0644'
     content: |
@@ -580,6 +588,7 @@ cat >> "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
       WantedBy=multi-user.target
 runcmd:
   - [systemctl, daemon-reload]
+  - [bash, -c, "sshd -t && systemctl restart ssh || true"]
   - [systemctl, enable, --now, local-news-install.service]
 YAML_EOF
 
