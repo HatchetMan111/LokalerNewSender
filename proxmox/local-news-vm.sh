@@ -583,6 +583,11 @@ cat >> "/tmp/local-news-user-${VMID}.yaml" <<YAML_EOF
       Type=oneshot
       ExecStart=/opt/local-news-install.sh
       RemainAfterExit=yes
+      # Selbstheilend: Nach 3 gescheiterten Compose-Versuchen (exit 1) startet
+      # systemd den Installer automatisch neu – der Docker-Layer-Cache macht
+      # jeden Neustart schneller, bis der Stack läuft. Kein manuelles Eingreifen.
+      Restart=on-failure
+      RestartSec=120
 
       [Install]
       WantedBy=multi-user.target
